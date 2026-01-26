@@ -6,13 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jinzhu/copier"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/internal/utils"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func PromptWithStream(
@@ -66,162 +71,229 @@ type Stream struct {
 	messages []message
 }
 
-func (s *Stream) Chunks(yield func(llms.StreamChunk, error) bool) {
-
-	var toolChoice *string
-	if s.tools != nil {
-		toolChoice = utils.Ptr("auto")
+func (s *Stream) Chunks(ctx context.Context) func(func(llms.StreamChunk, error) bool) {
+	requestToFirstTokenTime := time.Time{}
+	setRequestToFirstTokenTime := func(span trace.Span) {
+		if requestToFirstTokenTime.IsZero() {
+			return
+		}
+		span.SetAttributes(attribute.Float64("response.request_to_first_token_time", time.Since(requestToFirstTokenTime).Seconds()))
+		span.AddEvent("received first chunk")
 	}
 
-	reqBody := requestBody{
-		Model:      s.model,
-		Messages:   s.messages,
-		Stream:     true,
-		Tools:      s.tools,
-		ToolChoice: toolChoice,
-	}
+	// TODO: See if this needs the ctx passed, or if the context should be saved.
+	// Intuitively it seems like it should be saved, but there is no reason to
+	// assume that the chunking will be invoked in the same place where prompting will
+	return func(yield func(llms.StreamChunk, error) bool) {
+		ctx, span := tracer.Start(ctx, "prompt llm stream")
+		defer span.End()
+		span.SetAttributes(attribute.String("request.model", s.model))
+		var toolNames []string
+		for _, tool := range s.tools {
+			toolNames = append(toolNames, tool.Function.Name)
+		}
+		span.SetAttributes(attribute.StringSlice("request.available_tools", toolNames))
 
-	requestBodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		yield(nil, fmt.Errorf("error marshalling JSON: %w", err))
-		return
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBodyBytes))
-	if err != nil {
-		yield(nil, fmt.Errorf("error creating HTTP request: %w", err))
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.apiKey)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		yield(nil, fmt.Errorf("error sending request: %w", err))
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		// TODO: Retry depending on status, send back a message to the user
-		// to indicate that something is going on
-		yield(nil, fmt.Errorf("non-OK HTTP status: %s", resp.Status))
-		return
-	}
-
-	toolCalls := []toolCall{}
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		chunk := strings.TrimSpace(strings.TrimPrefix(scanner.Text(), chunkPrefix))
-
-		if len(chunk) == 0 {
-			continue
+		var toolChoice *string
+		if s.tools != nil {
+			toolChoice = utils.Ptr("auto")
 		}
 
-		if chunk == endMessage {
-			break
+		reqBody := requestBody{
+			Model:      s.model,
+			Messages:   s.messages,
+			Stream:     true,
+			Tools:      s.tools,
+			ToolChoice: toolChoice,
 		}
 
-		// log.Println("Chunk:", chunk)
-		var responseBody streamingResponseBody
-		err := json.Unmarshal([]byte(chunk), &responseBody)
+		requestBodyBytes, err := json.Marshal(reqBody)
 		if err != nil {
-			if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
-				return
-			}
-			continue
+			err = fmt.Errorf("error marshalling JSON: %w", err)
+			span.RecordError(err)
+			yield(nil, err)
+			return
 		}
-		var finishReason *string
-		if len(responseBody.Choices) > 0 {
-			delta := responseBody.Choices[0].Delta
 
-			if delta.FinishReason != nil {
-				finishReason = delta.FinishReason
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBodyBytes))
+		if err != nil {
+			err = fmt.Errorf("error creating HTTP request: %w", err)
+			span.RecordError(err)
+			yield(nil, err)
+			return
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+s.apiKey)
+
+		span.SetAttributes(attribute.String("request.url", req.URL.String()))
+		client := &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport,
+			otelhttp.WithSpanNameFormatter(func(operationName string, request *http.Request) string {
+				return operationName + " " + request.URL.Path
+			}),
+		)}
+		requestToFirstTokenTime = time.Now()
+		span.AddEvent("request started")
+		resp, err := client.Do(req)
+		if err != nil {
+			err = fmt.Errorf("error sending request: %w", err)
+			span.RecordError(err)
+			yield(nil, err)
+			return
+		}
+		defer resp.Body.Close()
+
+		span.SetAttributes(attribute.Int("response.status_code", resp.StatusCode))
+		if resp.StatusCode != http.StatusOK {
+			if errorBody, err := io.ReadAll(resp.Body); err != nil {
+				err = fmt.Errorf("error reading error body: %w", err)
+				span.RecordError(err)
+				span.SetAttributes(attribute.String("error", err.Error()))
+			} else {
+				span.SetAttributes(attribute.String("response.error", string(errorBody)))
 			}
 
-			if len(delta.ToolCalls) > 0 {
-				toolCalls = append(toolCalls, delta.ToolCalls...)
-				for _, toolCall := range delta.ToolCalls {
-					if !yield(StreamToolCallChunk{
-						finishReason: finishReason,
-						toolCall: llms.ToolCall{
-							ID:        toolCall.ID,
-							Type:      toolCall.Type,
-							Name:      toolCall.Function.Name,
-							Arguments: toolCall.Function.Arguments,
-							Function: llms.ToolCallFunction{
+			// TODO: Retry depending on status, send back a message to the user
+			// to indicate that something is going on
+			err := fmt.Errorf("non-OK HTTP status: %s", resp.Status)
+			span.RecordError(err)
+			yield(nil, fmt.Errorf("non-OK HTTP status: %s", resp.Status))
+			return
+		}
+
+		toolCalls := []toolCall{}
+		defer func() {
+			toolNames := []string{}
+			for _, toolCall := range toolCalls {
+				toolNames = append(toolNames, toolCall.Function.Name)
+			}
+			span.SetAttributes(attribute.StringSlice("response.tool_calls", toolNames))
+		}()
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			chunk := strings.TrimSpace(strings.TrimPrefix(scanner.Text(), chunkPrefix))
+			setRequestToFirstTokenTime(span)
+
+			if len(chunk) == 0 {
+				continue
+			}
+
+			if chunk == endMessage {
+				break
+			}
+
+			var responseBody streamingResponseBody
+			err := json.Unmarshal([]byte(chunk), &responseBody)
+			if err != nil {
+				err = fmt.Errorf("error unmarshalling JSON: %w", err)
+				span.RecordError(err)
+				if !yield(nil, err) {
+					return
+				}
+				continue
+			}
+			var finishReason *string
+			if len(responseBody.Choices) > 0 {
+				delta := responseBody.Choices[0].Delta
+
+				if delta.FinishReason != nil {
+					finishReason = delta.FinishReason
+				}
+
+				if len(delta.ToolCalls) > 0 {
+					toolCalls = append(toolCalls, delta.ToolCalls...)
+					for _, toolCall := range delta.ToolCalls {
+						if !yield(StreamToolCallChunk{
+							finishReason: finishReason,
+							toolCall: llms.ToolCall{
+								ID:        toolCall.ID,
+								Type:      toolCall.Type,
 								Name:      toolCall.Function.Name,
 								Arguments: toolCall.Function.Arguments,
+								Function: llms.ToolCallFunction{
+									Name:      toolCall.Function.Name,
+									Arguments: toolCall.Function.Arguments,
+								},
 							},
-						},
+						}, nil) {
+							return
+						}
+					}
+				}
+
+				if delta.Content != "" {
+					content := delta.Content
+					if !yield(StreamContentChunk{
+						finishReason: finishReason,
+						content:      content,
+					}, nil) {
+						return
+					}
+				}
+
+				if delta.Reasoning != "" {
+					reasoning := delta.Reasoning
+					if !yield(StreamReasoningChunk{
+						finishReason: finishReason,
+						reasoning:    reasoning,
+						channel:      delta.Channel,
 					}, nil) {
 						return
 					}
 				}
 			}
 
-			if delta.Content != "" {
-				content := delta.Content
-				if !yield(StreamContentChunk{
+			if responseBody.Usage != nil {
+				span.SetAttributes(attribute.Int("usage.input", responseBody.Usage.PromptTokens))
+				span.SetAttributes(attribute.Int("usage.prompt", responseBody.Usage.PromptTokens))
+				span.SetAttributes(attribute.Int("usage.output", responseBody.Usage.CompletionTokens))
+				span.SetAttributes(attribute.Int("usage.completion", responseBody.Usage.CompletionTokens))
+				span.SetAttributes(attribute.Int("usage.total", responseBody.Usage.TotalTokens))
+
+				span.SetAttributes(attribute.Float64("usage.queue_time", responseBody.Usage.QueueTime))
+				span.SetAttributes(attribute.Float64("usage.prompt_time", responseBody.Usage.PromptTime))
+				span.SetAttributes(attribute.Float64("usage.completion_time", responseBody.Usage.CompletionTime))
+				span.SetAttributes(attribute.Float64("usage.total_time", responseBody.Usage.TotalTime))
+
+				var outputTokensDetails *llms.OutputTokensDetails
+				var completionTokensDetails *llms.CompletionTokensDetails
+				if responseBody.Usage.CompletionTokensDetails != nil {
+					span.SetAttributes(attribute.Int("usage.reasoning", responseBody.Usage.CompletionTokensDetails.ReasoningTokens))
+					completionTokensDetails = utils.Ptr(llms.CompletionTokensDetails{
+						ReasoningTokens: responseBody.Usage.CompletionTokensDetails.ReasoningTokens,
+					})
+					outputTokensDetails = utils.Ptr(llms.OutputTokensDetails{
+						ReasoningTokens: responseBody.Usage.CompletionTokensDetails.ReasoningTokens,
+					})
+				}
+
+				if !yield(StreamUsageChunk{
 					finishReason: finishReason,
-					content:      content,
+					usage: llms.Usage{
+						InputTokens:             responseBody.Usage.PromptTokens,
+						PromptTokens:            responseBody.Usage.PromptTokens,
+						OutputTokens:            responseBody.Usage.CompletionTokens,
+						CompletionTokens:        responseBody.Usage.CompletionTokens,
+						CompletionTokensDetails: completionTokensDetails,
+						OutputTokensDetails:     outputTokensDetails,
+						TotalTokens:             responseBody.Usage.TotalTokens,
+
+						QueueTime:      responseBody.Usage.QueueTime,
+						PromptTime:     responseBody.Usage.PromptTime,
+						CompletionTime: responseBody.Usage.CompletionTime,
+						TotalTime:      responseBody.Usage.TotalTime,
+					},
 				}, nil) {
 					return
 				}
-			}
 
-			if delta.Reasoning != "" {
-				reasoning := delta.Reasoning
-				if !yield(StreamReasoningChunk{
-					finishReason: finishReason,
-					reasoning:    reasoning,
-					channel:      delta.Channel,
-				}, nil) {
-					return
-				}
 			}
 		}
 
-		if responseBody.Usage != nil {
-			var outputTokensDetails *llms.OutputTokensDetails
-			var completionTokensDetails *llms.CompletionTokensDetails
-			if responseBody.Usage.CompletionTokensDetails != nil {
-				completionTokensDetails = utils.Ptr(llms.CompletionTokensDetails{
-					ReasoningTokens: responseBody.Usage.CompletionTokensDetails.ReasoningTokens,
-				})
-				outputTokensDetails = utils.Ptr(llms.OutputTokensDetails{
-					ReasoningTokens: responseBody.Usage.CompletionTokensDetails.ReasoningTokens,
-				})
-			}
-
-			if !yield(StreamUsageChunk{
-				finishReason: finishReason,
-				usage: llms.Usage{
-					InputTokens:             responseBody.Usage.PromptTokens,
-					PromptTokens:            responseBody.Usage.PromptTokens,
-					OutputTokens:            responseBody.Usage.CompletionTokens,
-					CompletionTokens:        responseBody.Usage.CompletionTokens,
-					CompletionTokensDetails: completionTokensDetails,
-					OutputTokensDetails:     outputTokensDetails,
-					TotalTokens:             responseBody.Usage.TotalTokens,
-
-					QueueTime:      responseBody.Usage.QueueTime,
-					PromptTime:     responseBody.Usage.PromptTime,
-					CompletionTime: responseBody.Usage.CompletionTime,
-					TotalTime:      responseBody.Usage.TotalTime,
-				},
-			}, nil) {
-				return
-			}
-
+		if err := scanner.Err(); err != nil {
+			yield(nil, fmt.Errorf("error reading streamed response: %w", err))
+			return
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		yield(nil, fmt.Errorf("error reading streamed response: %w", err))
-		return
 	}
 }
 

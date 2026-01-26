@@ -12,10 +12,12 @@ import (
 
 	"github.com/invopop/jsonschema"
 	"github.com/koscakluka/ema-core/core/llms"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func PromptJSONSchema[T any](
-	_ context.Context,
+	ctx context.Context,
 	apiKey string,
 	model string,
 	prompt string,
@@ -23,6 +25,9 @@ func PromptJSONSchema[T any](
 	outputSchema T,
 	opts ...llms.StructuredPromptOption,
 ) (*T, error) {
+	ctx, span := tracer.Start(ctx, "prompt llm structured")
+	defer span.End()
+
 	options := llms.StructuredPromptOptions{
 		BaseOptions: llms.BaseOptions{Instructions: systemPrompt},
 	}
@@ -65,27 +70,56 @@ func PromptJSONSchema[T any](
 		},
 	}
 
+	span.SetAttributes(attribute.String("request.model", model))
+	schemaString, _ := schema.MarshalJSON()
+	span.SetAttributes(attribute.String("request.schema", string(schemaString)))
+
 	requestBodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("error marshalling JSON: %w", err)
+		err = fmt.Errorf("error marshalling JSON: %w", err)
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("error", err.Error()))
+		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("error creating HTTP request: %w", err)
+		err = fmt.Errorf("error creating HTTP request: %w", err)
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("error", err.Error()))
+		return nil, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{}
+	span.SetAttributes(attribute.String("request.url", req.URL.String()))
+	client := &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error sending request: %w", err)
+		err = fmt.Errorf("error sending request: %w", err)
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("error", err.Error()))
+		return nil, err
 	}
+	defer resp.Body.Close()
 
+	span.SetAttributes(attribute.Int("response.status_code", resp.StatusCode))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("non-OK HTTP status: %s", resp.Status)
+		if errorBody, err := io.ReadAll(resp.Body); err != nil {
+			err = fmt.Errorf("error reading error body: %w", err)
+			span.RecordError(err)
+			span.SetAttributes(attribute.String("error", err.Error()))
+		} else {
+			span.SetAttributes(attribute.String("response.error", string(errorBody)))
+		}
+
+		// TODO: Retry depending on status, send back a message to the user
+		// to indicate that something is going on
+		err := fmt.Errorf("non-OK HTTP status: %s", resp.Status)
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("error", err.Error()))
+		return nil, err
 	}
 	// response, err := c.ChatCompletion(ctx, request)
 	// if err != nil {
@@ -97,10 +131,12 @@ func PromptJSONSchema[T any](
 	// 	}
 	// }
 
-	defer resp.Body.Close()
 	respBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %w", err)
+		err = fmt.Errorf("error reading response body: %w", err)
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("error", err.Error()))
+		return nil, err
 	}
 	var responseBody schemaResponseBody
 	err = json.Unmarshal(respBodyBytes, &responseBody)
@@ -112,7 +148,10 @@ func PromptJSONSchema[T any](
 	}
 	err = json.Unmarshal([]byte(content), outputSchema)
 	if err != nil {
-		return nil, fmt.Errorf("error unmarshalling response: %w", err)
+		err = fmt.Errorf("error unmarshalling response: %w", err)
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("error", err.Error()))
+		return nil, err
 	}
 
 	return &outputSchema, nil

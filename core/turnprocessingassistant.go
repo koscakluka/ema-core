@@ -105,14 +105,14 @@ func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt stri
 			turns = append(turns, assistantTurn)
 		}
 
-		stream := llm.PromptWithStream(context.TODO(), prompt,
+		stream := llm.PromptWithStream(ctx, prompt,
 			llms.WithTurns(turns...),
 			llms.WithTools(o.tools...),
 		)
 
 		var response strings.Builder
 		toolCalls := []llms.ToolCall{}
-		for chunk, err := range stream.Chunks {
+		for chunk, err := range stream.Chunks(ctx) {
 			if err != nil {
 				// TODO: handle error
 				break

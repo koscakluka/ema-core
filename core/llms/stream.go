@@ -1,7 +1,9 @@
 package llms
 
+import "context"
+
 type Stream interface {
-	Chunks(func(StreamChunk, error) bool)
+	Chunks(context.Context) func(func(StreamChunk, error) bool)
 }
 
 type StreamChunk interface {
