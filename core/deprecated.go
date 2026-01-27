@@ -365,7 +365,8 @@ type ClassifyOption func(*ClassifyOptions)
 //
 // Deprecated: (since v0.0.13) use InterruptionHandlers instead
 type ClassifyOptions struct {
-	Tools []llms.Tool
+	Tools   []llms.Tool
+	Context context.Context
 }
 
 // ClassifyWithTools
@@ -374,6 +375,15 @@ type ClassifyOptions struct {
 func ClassifyWithTools(tools []llms.Tool) ClassifyOption {
 	return func(o *ClassifyOptions) {
 		o.Tools = tools
+	}
+}
+
+// ClassifyWithContext
+//
+// Deprecated: (since v0.0.14) use InterruptionHandlers instead
+func ClassifyWithContext(ctx context.Context) ClassifyOption {
+	return func(o *ClassifyOptions) {
+		o.Context = ctx
 	}
 }
 

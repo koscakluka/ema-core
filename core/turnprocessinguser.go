@@ -8,6 +8,8 @@ import (
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/speechtotext"
 	"github.com/koscakluka/ema-core/internal/utils"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (o *Orchestrator) initSST() {
@@ -54,6 +56,7 @@ func (o *Orchestrator) initSST() {
 
 func (o *Orchestrator) processUserTurn(prompt string) {
 	var interruptionID *int64
+	ctx := context.Background()
 	if o.turns.activeTurn() != nil {
 		interruptionID = utils.Ptr(time.Now().UnixNano())
 		interruption := &llms.InterruptionV0{
@@ -61,11 +64,24 @@ func (o *Orchestrator) processUserTurn(prompt string) {
 			Source: prompt,
 		}
 		o.turns.addInterruption(*interruption)
+		ctx = o.turns.activeTurnCtx
+		span := trace.SpanFromContext(ctx)
+		span.AddEvent("interruption", trace.WithAttributes(attribute.Int64("interruption.id", *interruptionID)))
 	}
 
 	passthrough := &prompt
 	if interruptionID != nil {
-		if o.interruptionHandlerV1 != nil {
+		if o.interruptionHandlerV2 != nil {
+			if interruption, err := o.interruptionHandlerV2.HandleV2(ctx, *interruptionID, o, o.tools); err != nil {
+				log.Printf("Failed to handle interruption: %v", err)
+			} else {
+				o.turns.updateInterruption(*interruptionID, func(update *llms.InterruptionV0) {
+					update.Type = interruption.Type
+					update.Resolved = interruption.Resolved
+				})
+				return
+			}
+		} else if o.interruptionHandlerV1 != nil {
 			if interruption, err := o.interruptionHandlerV1.HandleV1(*interruptionID, o, o.tools); err != nil {
 				log.Printf("Failed to handle interruption: %v", err)
 			} else {
@@ -85,7 +101,7 @@ func (o *Orchestrator) processUserTurn(prompt string) {
 				return
 			}
 		} else if o.interruptionClassifier != nil {
-			interruption, err := o.interruptionClassifier.Classify(prompt, llms.ToMessages(o.turns.turns), ClassifyWithTools(o.tools))
+			interruption, err := o.interruptionClassifier.Classify(prompt, llms.ToMessages(o.turns.turns), ClassifyWithTools(o.tools), ClassifyWithContext(ctx))
 			if err != nil {
 				// TODO: Retry?
 				log.Printf("Failed to classify interruption: %v", err)
@@ -110,5 +126,11 @@ func (o *Orchestrator) queuePrompt(prompt string) {
 	if o.orchestrateOptions.onTranscription != nil {
 		o.orchestrateOptions.onTranscription(prompt)
 	}
-	o.transcripts <- prompt
+	ctx, _ := tracer.Start(context.Background(), "process turn")
+	o.transcripts <- promptQueueItem{content: prompt, ctx: ctx}
+}
+
+type promptQueueItem struct {
+	content string
+	ctx     context.Context
 }

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/koscakluka/ema-core/core/texttospeech"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (o *Orchestrator) initTTS() {
@@ -25,7 +27,9 @@ func (o *Orchestrator) initTTS() {
 	}
 }
 
-func (o *Orchestrator) passSpeechToAudioOutput() {
+func (o *Orchestrator) passSpeechToAudioOutput(ctx context.Context) {
+	_, span := tracer.Start(ctx, "passing speech to audio output")
+	defer span.End()
 bufferReadingLoop:
 	for audioOrMark := range o.outputAudioBuffer.Audio {
 		switch audioOrMark.Type {
@@ -48,6 +52,7 @@ bufferReadingLoop:
 
 		case "mark":
 			mark := audioOrMark.Mark
+			span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark)))
 			if o.audioOutput != nil {
 				switch o.audioOutput.(type) {
 				case AudioOutputV1:

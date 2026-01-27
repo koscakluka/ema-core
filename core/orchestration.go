@@ -9,6 +9,7 @@ import (
 
 	emaContext "github.com/koscakluka/ema-core/core/context"
 	"github.com/koscakluka/ema-core/core/llms"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Orchestrator struct {
@@ -19,7 +20,7 @@ type Orchestrator struct {
 
 	outputTextBuffer  textBuffer
 	outputAudioBuffer audioBuffer
-	transcripts       chan string
+	transcripts       chan promptQueueItem
 	promptEnded       sync.WaitGroup
 
 	tools []llms.Tool
@@ -32,6 +33,7 @@ type Orchestrator struct {
 	interruptionClassifier InterruptionClassifier
 	interruptionHandlerV0  InterruptionHandlerV0
 	interruptionHandlerV1  InterruptionHandlerV1
+	interruptionHandlerV2  InterruptionHandlerV2
 
 	orchestrateOptions OrchestrateOptions
 	config             *Config
@@ -41,7 +43,7 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 	o := &Orchestrator{
 		IsRecording:       false,
 		IsSpeaking:        false,
-		transcripts:       make(chan string, 10), // TODO: Figure out good valiues for this
+		transcripts:       make(chan promptQueueItem, 10), // TODO: Figure out good valiues for this
 		config:            &Config{AlwaysRecording: true},
 		turns:             Turns{activeTurnIdx: -1},
 		outputTextBuffer:  *newTextBuffer(),
@@ -79,6 +81,8 @@ func (o *Orchestrator) Close() {
 	// TODO: Make sure that deepgramClient is closed and no longer transcribing
 	// before closing the channel
 	close(o.transcripts)
+	span := trace.SpanFromContext(o.turns.activeTurnCtx)
+	span.End()
 }
 
 func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOption) {
@@ -160,6 +164,8 @@ func (o *Orchestrator) Turns() emaContext.TurnsV0 {
 }
 
 func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
+	ctx, span := tracer.Start(ctx, "call tool with prompt")
+	defer span.End()
 	switch o.llm.(type) {
 	case LLMWithStream:
 		_, err := o.processStreaming(ctx, prompt, o.turns.turns, newTextBuffer())

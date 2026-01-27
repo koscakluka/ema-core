@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"context"
 	"log"
 	"strings"
 	"sync"
@@ -8,7 +9,9 @@ import (
 	"github.com/koscakluka/ema-core/core/llms"
 )
 
-func (o *Orchestrator) passTextToTTS() {
+func (o *Orchestrator) passTextToTTS(ctx context.Context) {
+	ctx, span := tracer.Start(ctx, "passing text to tts")
+	defer span.End()
 textLoop:
 	for chunk := range o.outputTextBuffer.Chunks {
 		activeTurn := o.turns.activeTurn()

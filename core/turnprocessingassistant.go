@@ -8,13 +8,21 @@ import (
 	"log"
 
 	"github.com/koscakluka/ema-core/core/llms"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (o *Orchestrator) startAssistantLoop() {
-	for transcript := range o.transcripts {
+	for promptQueueItem := range o.transcripts {
+		ctx := promptQueueItem.ctx
+		transcript := promptQueueItem.content
+		mainSpan := trace.SpanFromContext(ctx)
+
 		if o.turns.activeTurn() != nil {
 			o.promptEnded.Wait()
 		}
+
+		mainSpan.AddEvent("taken out of queue")
 		activeTurn := &llms.Turn{
 			Role:  llms.TurnRoleAssistant,
 			Stage: llms.TurnStagePreparing,
@@ -29,22 +37,30 @@ func (o *Orchestrator) startAssistantLoop() {
 
 		o.outputTextBuffer.Clear()
 		o.outputAudioBuffer.Clear()
-		go o.passTextToTTS()
-		go o.passSpeechToAudioOutput()
+		go o.passTextToTTS(ctx)
+		go o.passSpeechToAudioOutput(ctx)
 
 		activeTurn.Stage = llms.TurnStageGeneratingResponse
-		o.turns.pushActiveTurn(*activeTurn)
+		o.turns.pushActiveTurn(ctx, *activeTurn)
+		ctx, span := tracer.Start(ctx, "generate response")
 		var response *llms.Turn
 		switch o.llm.(type) {
 		case LLMWithStream:
-			response, _ = o.processStreaming(context.TODO(), transcript, messages.turns, &o.outputTextBuffer)
-			// case LLMWithGeneralPrompt:
-			// TODO: Implement this
+			response, _ = o.processStreaming(ctx, transcript, messages.turns, &o.outputTextBuffer)
+
+		// TODO: Implement this
+		// case LLMWithGeneralPrompt:
 		case LLMWithPrompt:
-			response, _ = o.processPromptOld(context.TODO(), transcript, messages.turns, &o.outputTextBuffer)
+			response, _ = o.processPromptOld(ctx, transcript, messages.turns, &o.outputTextBuffer)
 		default:
 			// Impossible state
-			continue
+		}
+		if response != nil {
+			var toolCalls []string
+			for _, toolCall := range response.ToolCalls {
+				toolCalls = append(toolCalls, toolCall.Name)
+			}
+			span.SetAttributes(attribute.StringSlice("assistant_turn.tool_calls", toolCalls))
 		}
 
 		o.outputTextBuffer.ChunksDone()
@@ -63,6 +79,10 @@ func (o *Orchestrator) startAssistantLoop() {
 			activeTurn.Stage = llms.TurnStageSpeaking
 			o.turns.updateActiveTurn(*activeTurn)
 		}
+		// NOTE: This is where the span ending is set, if there is a continue
+		// above the span also needs to be ended there
+		// TODO: Make sure that this is not a liability
+		span.End()
 	}
 }
 
@@ -88,6 +108,8 @@ func (o *Orchestrator) processPromptOld(ctx context.Context, prompt string, mess
 }
 
 func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt string, originalTurns []llms.Turn, buffer *textBuffer) (*llms.Turn, error) {
+	ctx, span := tracer.Start(ctx, "process streaming")
+	defer span.End()
 	if o.llm.(LLMWithStream) == nil {
 		return nil, fmt.Errorf("LLM does not support streaming")
 	}
@@ -158,7 +180,7 @@ func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt stri
 	}
 }
 
-func (o *Orchestrator) callTool(_ context.Context, toolCall llms.ToolCall) (*llms.Turn, error) {
+func (o *Orchestrator) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms.Turn, error) {
 	toolName := toolCall.Name
 	toolArguments := toolCall.Arguments
 	if toolCall.Name == "" {
@@ -168,6 +190,9 @@ func (o *Orchestrator) callTool(_ context.Context, toolCall llms.ToolCall) (*llm
 		toolArguments = toolCall.Function.Arguments
 
 	}
+	ctx, span := tracer.Start(ctx, "execute tool")
+	defer span.End()
+	span.SetAttributes(attribute.String("tool.name", toolName))
 	for _, tool := range o.tools {
 		if tool.Function.Name == toolName {
 			resp, err := tool.Execute(toolArguments)

@@ -1,9 +1,12 @@
 package orchestration
 
 import (
+	"context"
 	"slices"
 
 	"github.com/koscakluka/ema-core/core/llms"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Turns struct {
@@ -16,6 +19,7 @@ type Turns struct {
 	// it is an int so that active turn can be correctly modified even if the
 	// underlying slice changes
 	activeTurnIdx int
+	activeTurnCtx context.Context
 }
 
 // Push adds a new turn to the stored turns
@@ -65,7 +69,8 @@ func (t *Turns) RValues(yield func(llms.Turn) bool) {
 	}
 }
 
-func (t *Turns) pushActiveTurn(turn llms.Turn) {
+func (t *Turns) pushActiveTurn(ctx context.Context, turn llms.Turn) {
+	t.activeTurnCtx = ctx
 	t.activeTurnIdx = len(t.turns)
 	t.turns = append(t.turns, turn)
 }
@@ -87,12 +92,20 @@ func (t *Turns) updateActiveTurn(turn llms.Turn) {
 
 func (t *Turns) unsetActiveTurn() {
 	t.activeTurnIdx = -1
+	t.activeTurnCtx = nil
 }
 
 func (o *Orchestrator) finaliseActiveTurn() {
 	activeTurn := o.turns.activeTurn()
 	if activeTurn != nil {
+		span := trace.SpanFromContext(o.turns.activeTurnCtx)
+		interruptionTypes := []string{}
+		for _, interruption := range activeTurn.Interruptions {
+			interruptionTypes = append(interruptionTypes, interruption.Type)
+		}
+		span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
 		activeTurn.Stage = llms.TurnStageFinalized
+		span.End()
 		o.turns.updateActiveTurn(*activeTurn)
 		o.turns.unsetActiveTurn()
 	}
