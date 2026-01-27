@@ -125,6 +125,16 @@ func WithInterruptionHandlerV1(handler InterruptionHandlerV1) OrchestratorOption
 	}
 }
 
+type InterruptionHandlerV2 interface {
+	HandleV2(ctx context.Context, id int64, orchestrator interruptions.OrchestratorV0, tools []llms.Tool) (*llms.InterruptionV0, error)
+}
+
+func WithInterruptionHandlerV2(handler InterruptionHandlerV2) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.interruptionHandlerV2 = handler
+	}
+}
+
 func WithConfig(config *Config) OrchestratorOption {
 	return func(o *Orchestrator) {
 		if config == nil {

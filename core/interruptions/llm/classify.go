@@ -19,7 +19,7 @@ type Classification struct {
 	Type string `json:"type" jsonschema:"title=Type,description=The type of interruption" enum:"continuation,clarification,cancellation,ignorable,repetition,noise,action,new prompt"`
 }
 
-func classify(interruption llms.InterruptionV0, llm LLM, opts ...ClassifyOption) (*llms.InterruptionV0, error) {
+func classify(ctx context.Context, interruption llms.InterruptionV0, llm LLM, opts ...ClassifyOption) (*llms.InterruptionV0, error) {
 	options := ClassifyOptions{}
 	for _, opt := range opts {
 		opt(&options)
@@ -33,7 +33,7 @@ func classify(interruption llms.InterruptionV0, llm LLM, opts ...ClassifyOption)
 		}
 
 		resp := Classification{}
-		if err := llm.(LLMWithStructuredPrompt).PromptWithStructure(context.TODO(), interruption.Source,
+		if err := llm.(LLMWithStructuredPrompt).PromptWithStructure(ctx, interruption.Source,
 			&resp,
 			llms.WithSystemPrompt(systemPrompt),
 			llms.WithTurns(options.History...),
@@ -55,7 +55,7 @@ func classify(interruption llms.InterruptionV0, llm LLM, opts ...ClassifyOption)
 			systemPrompt += fmt.Sprintf("- %s: %s", tool.Function.Name, tool.Function.Description)
 		}
 
-		response, _ := llm.(LLMWithGeneralPrompt).Prompt(context.TODO(), interruption.Source,
+		response, _ := llm.(LLMWithGeneralPrompt).Prompt(ctx, interruption.Source,
 			llms.WithSystemPrompt(systemPrompt),
 			llms.WithTurns(options.History...),
 		)

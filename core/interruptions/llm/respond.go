@@ -8,7 +8,7 @@ import (
 	"github.com/koscakluka/ema-core/core/llms"
 )
 
-func respond(interruption llms.InterruptionV0, o interruptions.OrchestratorV0) (*llms.InterruptionV0, error) {
+func respond(ctx context.Context, interruption llms.InterruptionV0, o interruptions.OrchestratorV0) (*llms.InterruptionV0, error) {
 	switch interruptionType(interruption.Type) {
 	case InterruptionTypeContinuation:
 		o.CancelTurn()
@@ -60,7 +60,7 @@ func respond(interruption llms.InterruptionV0, o interruptions.OrchestratorV0) (
 
 	case InterruptionTypeAction:
 		interruption.Resolved = true
-		if err := o.CallTool(context.TODO(), interruption.Source); err != nil {
+		if err := o.CallTool(ctx, interruption.Source); err != nil {
 			return nil, err
 		}
 		return &interruption, nil
