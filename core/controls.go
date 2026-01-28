@@ -16,9 +16,13 @@ func (o *Orchestrator) PauseTurn() {
 	if o.audioOutput != nil {
 		o.audioOutput.ClearBuffer()
 	}
-	o.outputAudioBuffer.PauseAudio()
+	if activeTurn := o.turns.activeTurn; activeTurn != nil {
+		activeTurn.Pause()
+	}
 }
 
 func (o *Orchestrator) UnpauseTurn() {
-	o.outputAudioBuffer.UnpauseAudio()
+	if activeTurn := o.turns.activeTurn; activeTurn != nil {
+		activeTurn.Unpause()
+	}
 }

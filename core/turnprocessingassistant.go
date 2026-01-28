@@ -10,6 +10,7 @@ import (
 
 	"github.com/koscakluka/ema-core/core/llms"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (o *Orchestrator) startAssistantLoop() {
@@ -30,27 +31,26 @@ func (o *Orchestrator) startAssistantLoop() {
 			Content: transcript,
 		})
 
-		o.outputTextBuffer.Clear()
-		o.outputAudioBuffer.Clear()
-		go o.passTextToTTS(ctx)
-		go o.passSpeechToAudioOutput(ctx)
-
-		if err := o.turns.setActiveTurn(ctx, llms.Turn{Role: llms.TurnRoleAssistant}); err != nil {
+		if err := o.turns.setActiveTurn(ctx, llms.Turn{Role: llms.TurnRoleAssistant}, o.audioOutput); err != nil {
 			// TODO: Probably should be able to requeue the prompt or something
 			// here
 			mainSpan.RecordError(fmt.Errorf("failed to set active turn: %v", err))
 			continue
 		}
+
+		go o.passTextToTTS(ctx)
+		go o.passSpeechToAudioOutput(ctx)
+
 		ctx, span := tracer.Start(ctx, "generate response")
 		var response *llms.Turn
 		switch o.llm.(type) {
 		case LLMWithStream:
-			response, _ = o.processStreaming(ctx, transcript, messages.turns, &o.outputTextBuffer)
+			response, _ = o.processStreaming(ctx, transcript, messages.turns, &o.turns.activeTurn.textBuffer)
 
 		// TODO: Implement this
 		// case LLMWithGeneralPrompt:
 		case LLMWithPrompt:
-			response, _ = o.processPromptOld(ctx, transcript, messages.turns, &o.outputTextBuffer)
+			response, _ = o.processPromptOld(ctx, transcript, messages.turns, &o.turns.activeTurn.textBuffer)
 		default:
 			// Impossible state
 		}
@@ -62,8 +62,10 @@ func (o *Orchestrator) startAssistantLoop() {
 			span.SetAttributes(attribute.StringSlice("assistant_turn.tool_calls", toolCalls))
 		}
 
-		o.outputTextBuffer.ChunksDone()
-		o.outputAudioBuffer.ChunksDone()
+		if activeTurn := o.turns.activeTurn; activeTurn != nil {
+			activeTurn.textBuffer.ChunksDone()
+			activeTurn.audioBuffer.ChunksDone()
+		}
 		activeTurn := o.turns.activeTurn
 		if activeTurn != nil && response != nil && !activeTurn.Cancelled {
 			activeTurn.Content = response.Content

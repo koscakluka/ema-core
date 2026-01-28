@@ -8,10 +8,24 @@ import (
 )
 
 func (o *Orchestrator) passTextToTTS(ctx context.Context) {
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			if activeTurn := o.turns.activeTurn; activeTurn != nil {
+				activeTurn.textBuffer.Clear()
+			}
+		case <-done:
+		}
+	}()
+
 	ctx, span := tracer.Start(ctx, "passing text to tts")
 	defer span.End()
 textLoop:
-	for chunk := range o.outputTextBuffer.Chunks {
+	// TODO: This can panic if active turn ends up being nil, there should be a
+	// way around this, specifically, for the active turn to handle this loop
+	for chunk := range o.turns.activeTurn.textBuffer.Chunks {
 		activeTurn := o.turns.activeTurn
 		if activeTurn != nil && activeTurn.Cancelled {
 			break textLoop

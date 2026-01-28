@@ -14,8 +14,16 @@ import (
 func (o *Orchestrator) initTTS() {
 	if o.textToSpeechClient != nil {
 		ttsOptions := []texttospeech.TextToSpeechOption{
-			texttospeech.WithAudioCallback(o.outputAudioBuffer.AddAudio),
-			texttospeech.WithAudioEndedCallback(o.outputAudioBuffer.AudioMark),
+			texttospeech.WithAudioCallback(func(audio []byte) {
+				if activeTurn := o.turns.activeTurn; activeTurn != nil {
+					activeTurn.audioBuffer.AddAudio(audio)
+				}
+			}),
+			texttospeech.WithAudioEndedCallback(func(transcript string) {
+				if activeTurn := o.turns.activeTurn; activeTurn != nil {
+					activeTurn.audioBuffer.AudioMark(transcript)
+				}
+			}),
 		}
 		if o.audioOutput != nil {
 			ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(o.audioOutput.EncodingInfo()))
@@ -28,10 +36,24 @@ func (o *Orchestrator) initTTS() {
 }
 
 func (o *Orchestrator) passSpeechToAudioOutput(ctx context.Context) {
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			if activeTurn := o.turns.activeTurn; activeTurn != nil {
+				activeTurn.audioBuffer.Clear()
+			}
+		case <-done:
+		}
+	}()
+
 	_, span := tracer.Start(ctx, "passing speech to audio output")
 	defer span.End()
 bufferReadingLoop:
-	for audioOrMark := range o.outputAudioBuffer.Audio {
+	// TODO: This can panic if active turn ends up being nil, there should be a
+	// way around this, specifically, for the active turn to handle this loop
+	for audioOrMark := range o.turns.activeTurn.audioBuffer.Audio {
 		switch audioOrMark.Type {
 		case "audio":
 			audio := audioOrMark.Audio
@@ -58,18 +80,24 @@ bufferReadingLoop:
 				case AudioOutputV1:
 					o.audioOutput.(AudioOutputV1).Mark(mark, func(mark string) {
 						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
-						o.outputAudioBuffer.MarkPlayed(mark)
+						if activeTurn := o.turns.activeTurn; activeTurn != nil {
+							activeTurn.audioBuffer.MarkPlayed(mark)
+						}
 					})
 				case AudioOutputV0:
 					go func() {
 						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v0")))
 						o.audioOutput.(AudioOutputV0).AwaitMark()
-						o.outputAudioBuffer.MarkPlayed(mark)
+						if activeTurn := o.turns.activeTurn; activeTurn != nil {
+							activeTurn.audioBuffer.MarkPlayed(mark)
+						}
 					}()
 				}
 			} else {
 				span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.Bool("audio_output.set", false)))
-				o.outputAudioBuffer.MarkPlayed(mark)
+				if activeTurn := o.turns.activeTurn; activeTurn != nil {
+					activeTurn.audioBuffer.MarkPlayed(mark)
+				}
 			}
 		}
 	}
@@ -79,7 +107,9 @@ bufferReadingLoop:
 	}()
 
 	if o.orchestrateOptions.onAudioEnded != nil {
-		o.orchestrateOptions.onAudioEnded(o.outputAudioBuffer.audioTranscript)
+		if activeTurn := o.turns.activeTurn; activeTurn != nil {
+			o.orchestrateOptions.onAudioEnded(activeTurn.audioBuffer.audioTranscript)
+		}
 	}
 
 	if o.audioOutput == nil {
@@ -87,7 +117,7 @@ bufferReadingLoop:
 	}
 
 	// TODO: Figure out why this is needed
-	// o.audioOutput.SendAudio([]byte{})
+	o.audioOutput.SendAudio([]byte{})
 
 	if activeTurn := o.turns.activeTurn; !o.IsSpeaking || activeTurn != nil && activeTurn.Cancelled {
 		o.audioOutput.ClearBuffer()

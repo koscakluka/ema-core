@@ -59,7 +59,7 @@ func (o *Orchestrator) processUserTurn(prompt string) {
 	ctx := context.Background()
 	if activeTurn := o.turns.activeTurn; activeTurn != nil {
 		interruptionID = utils.Ptr(time.Now().UnixNano())
-		if err := activeTurn.addInterruption(llms.InterruptionV0{
+		if err := activeTurn.AddInterruption(llms.InterruptionV0{
 			ID:     *interruptionID,
 			Source: prompt,
 		}); err != nil {

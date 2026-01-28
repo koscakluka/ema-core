@@ -78,12 +78,22 @@ func (t *Turns) RValues(yield func(llms.Turn) bool) {
 	}
 }
 
-func (t *Turns) setActiveTurn(ctx context.Context, turn llms.Turn) error {
+func (t *Turns) setActiveTurn(ctx context.Context, turn llms.Turn, audioOutput audioOutput) error {
 	if t.activeTurn != nil {
 		return fmt.Errorf("active turn already set")
 	}
 
-	t.activeTurn = &activeTurn{Turn: turn, ctx: ctx}
+	t.activeTurn = &activeTurn{
+		ctx:         ctx,
+		Turn:        turn,
+		textBuffer:  *newTextBuffer(),
+		audioBuffer: *newAudioBuffer(),
+	}
+
+	if audioOutput != nil {
+		t.activeTurn.audioBuffer.sampleRate = audioOutput.EncodingInfo().SampleRate
+	}
+
 	return nil
 }
 
@@ -125,10 +135,12 @@ func (t *Turns) updateInterruption(id int64, update func(*llms.InterruptionV0)) 
 type activeTurn struct {
 	llms.Turn
 
-	ctx context.Context
+	ctx         context.Context
+	textBuffer  textBuffer
+	audioBuffer audioBuffer
 }
 
-func (t *activeTurn) addInterruption(interruption llms.InterruptionV0) error {
+func (t *activeTurn) AddInterruption(interruption llms.InterruptionV0) error {
 	if t.Cancelled {
 		return fmt.Errorf("turn cancelled")
 	} else if t.Stage == llms.TurnStageFinalized {
@@ -137,4 +149,20 @@ func (t *activeTurn) addInterruption(interruption llms.InterruptionV0) error {
 
 	t.Interruptions = append(t.Interruptions, interruption)
 	return nil
+}
+
+func (t *activeTurn) Pause() {
+	t.audioBuffer.PauseAudio()
+}
+
+func (t *activeTurn) Unpause() {
+	t.audioBuffer.UnpauseAudio()
+}
+
+func (t *activeTurn) IsMutable() bool {
+	return !t.IsFinalized()
+}
+
+func (t *activeTurn) IsFinalized() bool {
+	return t.Stage == llms.TurnStageFinalized || t.Cancelled
 }

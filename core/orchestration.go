@@ -18,10 +18,8 @@ type Orchestrator struct {
 
 	turns Turns
 
-	outputTextBuffer  textBuffer
-	outputAudioBuffer audioBuffer
-	transcripts       chan promptQueueItem
-	promptEnded       sync.WaitGroup
+	transcripts chan promptQueueItem
+	promptEnded sync.WaitGroup
 
 	tools []llms.Tool
 
@@ -43,13 +41,11 @@ type Orchestrator struct {
 
 func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 	o := &Orchestrator{
-		IsRecording:       false,
-		IsSpeaking:        false,
-		transcripts:       make(chan promptQueueItem, 10), // TODO: Figure out good valiues for this
-		config:            &Config{AlwaysRecording: true},
-		outputTextBuffer:  *newTextBuffer(),
-		outputAudioBuffer: *newAudioBuffer(),
-		baseContext:       context.Background(),
+		IsRecording: false,
+		IsSpeaking:  false,
+		transcripts: make(chan promptQueueItem, 10), // TODO: Figure out good valiues for this
+		config:      &Config{AlwaysRecording: true},
+		baseContext: context.Background(),
 	}
 
 	for _, opt := range opts {
@@ -124,7 +120,9 @@ func (o *Orchestrator) QueuePrompt(prompt string) {
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
 	o.IsSpeaking = isSpeaking
-	o.outputAudioBuffer.AddAudio([]byte{})
+	if activeTurn := o.turns.activeTurn; activeTurn != nil {
+		activeTurn.audioBuffer.AddAudio([]byte{})
+	}
 	if o.audioOutput != nil {
 		o.audioOutput.ClearBuffer()
 	}
