@@ -15,30 +15,19 @@ import (
 	"github.com/koscakluka/ema-core/core/texttospeech"
 )
 
-const (
-	defaultSampleRate = 48000
-	defaultEncoding   = "linear16"
-)
-
 func (c *TextToSpeechClient) OpenStream(ctx context.Context, opts ...texttospeech.TextToSpeechOption) error {
-	options := texttospeech.TextToSpeechOptions{
-		EncodingInfo: audio.EncodingInfo{
-			SampleRate: defaultSampleRate,
-			Encoding:   defaultEncoding,
-		},
-	}
 	for _, opt := range opts {
-		opt(&options)
+		opt(&c.options)
 	}
 
-	conn, err := connectWebsocket(c.voice, options.EncodingInfo)
+	conn, err := connectWebsocket(c.voice, c.options.EncodingInfo)
 	if err != nil {
 		return fmt.Errorf("failed to open websocket: %w", err)
 	}
 
 	c.wsConn = conn
 
-	go c.readAndProcessMessages(ctx, conn, options)
+	go c.readAndProcessMessages(ctx, conn, c.options)
 
 	return nil
 }
@@ -70,19 +59,24 @@ func connectWebsocket(voice deepgramVoice, encodingInfo audio.EncodingInfo) (*we
 }
 
 func (c *TextToSpeechClient) SendText(text string) error {
-	if len(c.transcriptBuffer) == 0 {
-		c.transcriptBuffer = append(c.transcriptBuffer, "")
+	targetBuffer := &c.transcriptBuffer
+	if c.postRestartBuffer != nil {
+		targetBuffer = &c.postRestartBuffer
+	}
+
+	if len(*targetBuffer) == 0 {
+		*targetBuffer = append(*targetBuffer, "")
 	}
 
 	// TODO: Instead of (or in addition to) a mutex, we could implement a buffer
 	// to prevent writing to the websocket at the same time
-	if len(c.transcriptBuffer) == 1 {
+	if len(*targetBuffer) == 1 {
 		if err := c.speak(text); err != nil {
 			return err
 		}
 	}
 
-	c.transcriptBuffer[len(c.transcriptBuffer)-1] += text
+	(*targetBuffer)[len(*targetBuffer)-1] += text
 	return nil
 }
 
