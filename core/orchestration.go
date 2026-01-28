@@ -37,6 +37,8 @@ type Orchestrator struct {
 
 	orchestrateOptions OrchestrateOptions
 	config             *Config
+
+	baseContext context.Context
 }
 
 func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
@@ -48,6 +50,7 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 		turns:             Turns{activeTurnIdx: -1},
 		outputTextBuffer:  *newTextBuffer(),
 		outputAudioBuffer: *newAudioBuffer(),
+		baseContext:       context.Background(),
 	}
 
 	for _, opt := range opts {
@@ -81,15 +84,20 @@ func (o *Orchestrator) Close() {
 	// TODO: Make sure that deepgramClient is closed and no longer transcribing
 	// before closing the channel
 	close(o.transcripts)
-	span := trace.SpanFromContext(o.turns.activeTurnCtx)
-	span.End()
+	trace.SpanFromContext(o.turns.activeTurnCtx).End()
 }
 
+// Orchestrate starts the orchestrator that waits for any triggers to respond to
+//
+// ctx is used as a base context for any agent and tool calls, allowing for
+// cancellation
 func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOption) {
 	o.orchestrateOptions = OrchestrateOptions{}
 	for _, opt := range opts {
 		opt(&o.orchestrateOptions)
 	}
+
+	o.baseContext = ctx
 
 	o.initTTS()
 	o.initSST()

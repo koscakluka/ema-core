@@ -4,19 +4,19 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"log"
 
 	"github.com/koscakluka/ema-core/core/llms"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 func (o *Orchestrator) startAssistantLoop() {
 	for promptQueueItem := range o.transcripts {
-		ctx := promptQueueItem.ctx
+		ctx, mainSpan := tracer.Start(o.baseContext, "process turn")
+		mainSpan.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
 		transcript := promptQueueItem.content
-		mainSpan := trace.SpanFromContext(ctx)
 
 		if o.turns.activeTurn() != nil {
 			o.promptEnded.Wait()

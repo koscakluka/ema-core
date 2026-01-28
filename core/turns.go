@@ -104,6 +104,7 @@ func (o *Orchestrator) finaliseActiveTurn() {
 			interruptionTypes = append(interruptionTypes, interruption.Type)
 		}
 		span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
+		span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.transcripts)))
 		activeTurn.Stage = llms.TurnStageFinalized
 		span.End()
 		o.turns.updateActiveTurn(*activeTurn)

@@ -126,11 +126,10 @@ func (o *Orchestrator) queuePrompt(prompt string) {
 	if o.orchestrateOptions.onTranscription != nil {
 		o.orchestrateOptions.onTranscription(prompt)
 	}
-	ctx, _ := tracer.Start(context.Background(), "process turn")
-	o.transcripts <- promptQueueItem{content: prompt, ctx: ctx}
+	o.transcripts <- promptQueueItem{content: prompt, queuedAt: time.Now()}
 }
 
 type promptQueueItem struct {
-	content string
-	ctx     context.Context
+	content  string
+	queuedAt time.Time
 }
