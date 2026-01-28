@@ -47,7 +47,6 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 		IsSpeaking:        false,
 		transcripts:       make(chan promptQueueItem, 10), // TODO: Figure out good valiues for this
 		config:            &Config{AlwaysRecording: true},
-		turns:             Turns{activeTurnIdx: -1},
 		outputTextBuffer:  *newTextBuffer(),
 		outputAudioBuffer: *newAudioBuffer(),
 		baseContext:       context.Background(),
@@ -84,7 +83,9 @@ func (o *Orchestrator) Close() {
 	// TODO: Make sure that deepgramClient is closed and no longer transcribing
 	// before closing the channel
 	close(o.transcripts)
-	trace.SpanFromContext(o.turns.activeTurnCtx).End()
+	if activeTurn := o.turns.activeTurn; activeTurn != nil {
+		trace.SpanFromContext(activeTurn.ctx).End()
+	}
 }
 
 // Orchestrate starts the orchestrator that waits for any triggers to respond to

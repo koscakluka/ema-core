@@ -14,20 +14,15 @@ import (
 
 func (o *Orchestrator) startAssistantLoop() {
 	for promptQueueItem := range o.transcripts {
-		ctx, mainSpan := tracer.Start(o.baseContext, "process turn")
-		mainSpan.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
-		transcript := promptQueueItem.content
-
-		if o.turns.activeTurn() != nil {
+		if o.turns.activeTurn != nil {
 			o.promptEnded.Wait()
 		}
-
-		mainSpan.AddEvent("taken out of queue")
-		activeTurn := &llms.Turn{
-			Role:  llms.TurnRoleAssistant,
-			Stage: llms.TurnStagePreparing,
-		}
 		o.promptEnded.Add(1)
+
+		ctx, mainSpan := tracer.Start(o.baseContext, "process turn")
+		mainSpan.AddEvent("taken out of queue", trace.WithAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds())))
+		mainSpan.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
+		transcript := promptQueueItem.content
 
 		messages := o.turns
 		o.turns.Push(llms.Turn{
@@ -40,8 +35,12 @@ func (o *Orchestrator) startAssistantLoop() {
 		go o.passTextToTTS(ctx)
 		go o.passSpeechToAudioOutput(ctx)
 
-		activeTurn.Stage = llms.TurnStageGeneratingResponse
-		o.turns.pushActiveTurn(ctx, *activeTurn)
+		if err := o.turns.setActiveTurn(ctx, llms.Turn{Role: llms.TurnRoleAssistant}); err != nil {
+			// TODO: Probably should be able to requeue the prompt or something
+			// here
+			mainSpan.RecordError(fmt.Errorf("failed to set active turn: %v", err))
+			continue
+		}
 		ctx, span := tracer.Start(ctx, "generate response")
 		var response *llms.Turn
 		switch o.llm.(type) {
@@ -65,20 +64,14 @@ func (o *Orchestrator) startAssistantLoop() {
 
 		o.outputTextBuffer.ChunksDone()
 		o.outputAudioBuffer.ChunksDone()
-		activeTurn = o.turns.activeTurn()
-		if activeTurn != nil && response != nil {
-			activeTurn.Role = response.Role
+		activeTurn := o.turns.activeTurn
+		if activeTurn != nil && response != nil && !activeTurn.Cancelled {
 			activeTurn.Content = response.Content
 			activeTurn.ToolCalls = response.ToolCalls
 		} else {
 			// TODO: Figure out how to handle this case
 		}
 
-		if activeTurn != nil && !activeTurn.Cancelled {
-			// NOTE: Just in case it wasn't set previously
-			activeTurn.Stage = llms.TurnStageSpeaking
-			o.turns.updateActiveTurn(*activeTurn)
-		}
 		// NOTE: This is where the span ending is set, if there is a continue
 		// above the span also needs to be ended there
 		// TODO: Make sure that this is not a liability
@@ -140,13 +133,9 @@ func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt stri
 				break
 			}
 
-			activeTurn := o.turns.activeTurn()
+			activeTurn := o.turns.activeTurn
 			if activeTurn != nil && activeTurn.Cancelled {
 				return nil, nil
-			}
-			if activeTurn != nil && activeTurn.Stage != llms.TurnStageSpeaking {
-				activeTurn.Stage = llms.TurnStageSpeaking
-				o.turns.updateActiveTurn(*activeTurn)
 			}
 
 			switch chunk.(type) {

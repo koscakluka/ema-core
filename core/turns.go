@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/koscakluka/ema-core/core/llms"
@@ -14,12 +15,7 @@ type Turns struct {
 	// TODO: Consider adding ID to turns to be able to find the active turn
 	// if needed instead of keeping track of an index
 
-	// activeTurnIdx is the index of the active turn
-	//
-	// it is an int so that active turn can be correctly modified even if the
-	// underlying slice changes
-	activeTurnIdx int
-	activeTurnCtx context.Context
+	activeTurn *activeTurn
 }
 
 // Push adds a new turn to the stored turns
@@ -29,22 +25,25 @@ func (t *Turns) Push(turn llms.Turn) {
 
 // Pop removes the last turn from the stored turns, returns nil if empty
 func (t *Turns) Pop() *llms.Turn {
+	if activeTurn := t.activeTurn; activeTurn != nil {
+		activeTurn.Cancelled = true
+		t.activeTurn = nil
+		return &activeTurn.Turn
+	}
+
 	if len(t.turns) == 0 {
 		return nil
 	}
 	lastElementIdx := len(t.turns) - 1
 	turn := t.turns[lastElementIdx]
 	t.turns = t.turns[:lastElementIdx]
-	if t.activeTurnIdx == lastElementIdx {
-		t.activeTurnIdx = -1
-	}
 	return &turn
 }
 
 // Clear removes all stored turns
 func (t *Turns) Clear() {
 	t.turns = nil
-	t.activeTurnIdx = -1
+	t.activeTurn = nil
 }
 
 // Values is an iterator that goes over all the stored turns starting from the
@@ -55,11 +54,21 @@ func (t *Turns) Values(yield func(llms.Turn) bool) {
 			return
 		}
 	}
+	if activeTurn := t.activeTurn; activeTurn != nil {
+		if !yield(activeTurn.Turn) {
+			return
+		}
+	}
 }
 
 // Values is an iterator that goes over all the stored turns starting from the
 // latest towards the earliest
 func (t *Turns) RValues(yield func(llms.Turn) bool) {
+	if activeTurn := t.activeTurn; activeTurn != nil {
+		if !yield(activeTurn.Turn) {
+			return
+		}
+	}
 	// TODO: There should be a better way to do this than creating a new
 	// method just for reversing the order
 	for _, turn := range slices.Backward(t.turns) {
@@ -69,70 +78,41 @@ func (t *Turns) RValues(yield func(llms.Turn) bool) {
 	}
 }
 
-func (t *Turns) pushActiveTurn(ctx context.Context, turn llms.Turn) {
-	t.activeTurnCtx = ctx
-	t.activeTurnIdx = len(t.turns)
-	t.turns = append(t.turns, turn)
-}
-
-func (t *Turns) activeTurn() *llms.Turn {
-	if t.activeTurnIdx < 0 || t.activeTurnIdx >= len(t.turns) {
-		return nil
-	}
-	return &t.turns[t.activeTurnIdx]
-}
-
-func (t *Turns) updateActiveTurn(turn llms.Turn) {
-	if t.activeTurnIdx < 0 || t.activeTurnIdx >= len(t.turns) {
-		return
+func (t *Turns) setActiveTurn(ctx context.Context, turn llms.Turn) error {
+	if t.activeTurn != nil {
+		return fmt.Errorf("active turn already set")
 	}
 
-	t.turns[t.activeTurnIdx] = turn
-}
-
-func (t *Turns) unsetActiveTurn() {
-	t.activeTurnIdx = -1
-	t.activeTurnCtx = nil
+	t.activeTurn = &activeTurn{Turn: turn, ctx: ctx}
+	return nil
 }
 
 func (o *Orchestrator) finaliseActiveTurn() {
-	activeTurn := o.turns.activeTurn()
+	activeTurn := o.turns.activeTurn
 	if activeTurn != nil {
-		span := trace.SpanFromContext(o.turns.activeTurnCtx)
+		span := trace.SpanFromContext(activeTurn.ctx)
 		interruptionTypes := []string{}
 		for _, interruption := range activeTurn.Interruptions {
 			interruptionTypes = append(interruptionTypes, interruption.Type)
 		}
 		span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
 		span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.transcripts)))
-		activeTurn.Stage = llms.TurnStageFinalized
 		span.End()
-		o.turns.updateActiveTurn(*activeTurn)
-		o.turns.unsetActiveTurn()
+		o.turns.turns = append(o.turns.turns, activeTurn.Turn)
+		o.turns.activeTurn = nil
+		o.promptEnded.Done()
 	}
-}
-
-func (t *Turns) addInterruption(interruption llms.InterruptionV0) {
-	activeTurn := t.activeTurn()
-	if activeTurn != nil {
-		activeTurn.Interruptions = append(activeTurn.Interruptions, interruption)
-		t.updateActiveTurn(*activeTurn)
-	}
-}
-
-func (t *Turns) findInterruption(id int64) *llms.InterruptionV0 {
-	for turn := range t.RValues {
-		for _, interruption := range turn.Interruptions {
-			if interruption.ID == id {
-				return &interruption
-			}
-		}
-	}
-
-	return nil
 }
 
 func (t *Turns) updateInterruption(id int64, update func(*llms.InterruptionV0)) {
+	if t.activeTurn != nil {
+		for j, interruption := range t.activeTurn.Interruptions {
+			if interruption.ID == id {
+				update(&t.activeTurn.Interruptions[j])
+				return
+			}
+		}
+	}
 	for i, turn := range slices.Backward(t.turns) {
 		for j, interruption := range turn.Interruptions {
 			if interruption.ID == id {
@@ -140,4 +120,21 @@ func (t *Turns) updateInterruption(id int64, update func(*llms.InterruptionV0)) 
 			}
 		}
 	}
+}
+
+type activeTurn struct {
+	llms.Turn
+
+	ctx context.Context
+}
+
+func (t *activeTurn) addInterruption(interruption llms.InterruptionV0) error {
+	if t.Cancelled {
+		return fmt.Errorf("turn cancelled")
+	} else if t.Stage == llms.TurnStageFinalized {
+		return fmt.Errorf("turn already finalized")
+	}
+
+	t.Interruptions = append(t.Interruptions, interruption)
+	return nil
 }

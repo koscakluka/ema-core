@@ -5,8 +5,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-
-	"github.com/koscakluka/ema-core/core/llms"
 )
 
 func (o *Orchestrator) passTextToTTS(ctx context.Context) {
@@ -14,15 +12,10 @@ func (o *Orchestrator) passTextToTTS(ctx context.Context) {
 	defer span.End()
 textLoop:
 	for chunk := range o.outputTextBuffer.Chunks {
-		activeTurn := o.turns.activeTurn()
+		activeTurn := o.turns.activeTurn
 		if activeTurn != nil && activeTurn.Cancelled {
 			break textLoop
 		}
-		if activeTurn != nil && activeTurn.Stage != llms.TurnStageSpeaking {
-			activeTurn.Stage = llms.TurnStageSpeaking
-			o.turns.updateActiveTurn(*activeTurn)
-		}
-
 		if o.orchestrateOptions.onResponse != nil {
 			o.orchestrateOptions.onResponse(chunk)
 		}
@@ -46,10 +39,8 @@ textLoop:
 		if err := o.textToSpeechClient.FlushBuffer(); err != nil {
 			log.Printf("Failed to flush buffer: %v", err)
 		}
-	} else if o.turns.activeTurn() != nil && !o.turns.activeTurn().Cancelled {
+	} else if activeTurn := o.turns.activeTurn; activeTurn != nil && !activeTurn.Cancelled {
 		o.finaliseActiveTurn()
-		o.promptEnded.Done()
-
 	}
 
 	if o.orchestrateOptions.onResponseEnd != nil {

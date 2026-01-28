@@ -57,16 +57,18 @@ func (o *Orchestrator) initSST() {
 func (o *Orchestrator) processUserTurn(prompt string) {
 	var interruptionID *int64
 	ctx := context.Background()
-	if o.turns.activeTurn() != nil {
+	if activeTurn := o.turns.activeTurn; activeTurn != nil {
 		interruptionID = utils.Ptr(time.Now().UnixNano())
-		interruption := &llms.InterruptionV0{
+		if err := activeTurn.addInterruption(llms.InterruptionV0{
 			ID:     *interruptionID,
 			Source: prompt,
+		}); err != nil {
+			interruptionID = nil
+		} else {
+			ctx = activeTurn.ctx
+			span := trace.SpanFromContext(ctx)
+			span.AddEvent("interruption", trace.WithAttributes(attribute.Int64("interruption.id", *interruptionID)))
 		}
-		o.turns.addInterruption(*interruption)
-		ctx = o.turns.activeTurnCtx
-		span := trace.SpanFromContext(ctx)
-		span.AddEvent("interruption", trace.WithAttributes(attribute.Int64("interruption.id", *interruptionID)))
 	}
 
 	passthrough := &prompt

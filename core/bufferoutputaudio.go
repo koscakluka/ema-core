@@ -43,7 +43,7 @@ bufferReadingLoop:
 				continue bufferReadingLoop
 			}
 
-			if !o.IsSpeaking || (o.turns.activeTurn() != nil && o.turns.activeTurn().Cancelled) {
+			if activeTurn := o.turns.activeTurn; !o.IsSpeaking || activeTurn != nil && activeTurn.Cancelled {
 				o.audioOutput.ClearBuffer()
 				break bufferReadingLoop
 			}
@@ -57,15 +57,18 @@ bufferReadingLoop:
 				switch o.audioOutput.(type) {
 				case AudioOutputV1:
 					o.audioOutput.(AudioOutputV1).Mark(mark, func(mark string) {
+						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
 						o.outputAudioBuffer.MarkPlayed(mark)
 					})
 				case AudioOutputV0:
 					go func() {
+						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v0")))
 						o.audioOutput.(AudioOutputV0).AwaitMark()
 						o.outputAudioBuffer.MarkPlayed(mark)
 					}()
 				}
 			} else {
+				span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.Bool("audio_output.set", false)))
 				o.outputAudioBuffer.MarkPlayed(mark)
 			}
 		}
@@ -73,7 +76,6 @@ bufferReadingLoop:
 
 	defer func() {
 		o.finaliseActiveTurn()
-		o.promptEnded.Done()
 	}()
 
 	if o.orchestrateOptions.onAudioEnded != nil {
@@ -87,7 +89,7 @@ bufferReadingLoop:
 	// TODO: Figure out why this is needed
 	// o.audioOutput.SendAudio([]byte{})
 
-	if !o.IsSpeaking || (o.turns.activeTurn() != nil && o.turns.activeTurn().Cancelled) {
+	if activeTurn := o.turns.activeTurn; !o.IsSpeaking || activeTurn != nil && activeTurn.Cancelled {
 		o.audioOutput.ClearBuffer()
 		return
 	}
