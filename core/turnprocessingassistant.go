@@ -31,53 +31,70 @@ func (o *Orchestrator) startAssistantLoop() {
 			Content: transcript,
 		})
 
-		if err := o.turns.setActiveTurn(ctx, llms.Turn{Role: llms.TurnRoleAssistant}, o.audioOutput); err != nil {
+		if err := o.turns.startActiveTurn(ctx,
+			activeTurnComponents{
+				TextToSpeechClient: o.textToSpeechClient,
+				AudioOutput:        o.audioOutput,
+				ResponseGenerator: func(ctx context.Context, buffer *textBuffer) (*llms.Turn, error) {
+					switch o.llm.(type) {
+					case LLMWithStream:
+						return o.processStreaming(ctx, transcript, messages.turns, buffer)
+
+					// TODO: Implement this
+					// case LLMWithGeneralPrompt:
+					case LLMWithPrompt:
+						return o.processPromptOld(ctx, transcript, messages.turns, buffer)
+					default:
+						// Impossible state
+						return nil, fmt.Errorf("unknown LLM type")
+					}
+				},
+			},
+			activeTurnCallbacks{
+				OnResponseText: func(response string) {
+					if o.orchestrateOptions.onResponse != nil {
+						o.orchestrateOptions.onResponse(response)
+					}
+				},
+				OnResponseTextEnd: func() {
+					if o.orchestrateOptions.onResponseEnd != nil {
+						o.orchestrateOptions.onResponseEnd()
+					}
+				},
+				OnResponseSpeech: func(audio []byte) {
+					if o.orchestrateOptions.onAudio != nil {
+						o.orchestrateOptions.onAudio(audio)
+					}
+				},
+				OnResponseSpeechEnd: func(transcript string) {
+					if o.orchestrateOptions.onAudioEnded != nil {
+						o.orchestrateOptions.onAudioEnded(transcript)
+					}
+				},
+				OnFinalise: func(activeTurn *activeTurn) {
+					span := trace.SpanFromContext(activeTurn.ctx)
+					interruptionTypes := []string{}
+					for _, interruption := range activeTurn.Interruptions {
+						interruptionTypes = append(interruptionTypes, interruption.Type)
+					}
+					span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
+					span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.transcripts)))
+					span.End()
+					// TODO: Check if turns IDs match
+					if activeTurn := o.turns.activeTurn; activeTurn != nil {
+						o.turns.turns = append(o.turns.turns, activeTurn.Turn)
+						o.turns.activeTurn = nil
+						o.promptEnded.Done()
+					}
+				},
+			},
+			activeTurnConfig{IsSpeaking: o.IsSpeaking},
+		); err != nil {
+			mainSpan.RecordError(fmt.Errorf("failed to set active turn: %v", err))
 			// TODO: Probably should be able to requeue the prompt or something
 			// here
-			mainSpan.RecordError(fmt.Errorf("failed to set active turn: %v", err))
-			continue
 		}
 
-		go o.passTextToTTS(ctx)
-		go o.passSpeechToAudioOutput(ctx)
-
-		ctx, span := tracer.Start(ctx, "generate response")
-		var response *llms.Turn
-		switch o.llm.(type) {
-		case LLMWithStream:
-			response, _ = o.processStreaming(ctx, transcript, messages.turns, &o.turns.activeTurn.textBuffer)
-
-		// TODO: Implement this
-		// case LLMWithGeneralPrompt:
-		case LLMWithPrompt:
-			response, _ = o.processPromptOld(ctx, transcript, messages.turns, &o.turns.activeTurn.textBuffer)
-		default:
-			// Impossible state
-		}
-		if response != nil {
-			var toolCalls []string
-			for _, toolCall := range response.ToolCalls {
-				toolCalls = append(toolCalls, toolCall.Name)
-			}
-			span.SetAttributes(attribute.StringSlice("assistant_turn.tool_calls", toolCalls))
-		}
-
-		if activeTurn := o.turns.activeTurn; activeTurn != nil {
-			activeTurn.textBuffer.ChunksDone()
-			activeTurn.audioBuffer.ChunksDone()
-		}
-		activeTurn := o.turns.activeTurn
-		if activeTurn != nil && response != nil && !activeTurn.Cancelled {
-			activeTurn.Content = response.Content
-			activeTurn.ToolCalls = response.ToolCalls
-		} else {
-			// TODO: Figure out how to handle this case
-		}
-
-		// NOTE: This is where the span ending is set, if there is a continue
-		// above the span also needs to be ended there
-		// TODO: Make sure that this is not a liability
-		span.End()
 	}
 }
 

@@ -1,67 +1,9 @@
 package orchestration
 
 import (
-	"context"
-	"log"
 	"strings"
 	"sync"
 )
-
-func (o *Orchestrator) passTextToTTS(ctx context.Context) {
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			if activeTurn := o.turns.activeTurn; activeTurn != nil {
-				activeTurn.textBuffer.Clear()
-			}
-		case <-done:
-		}
-	}()
-
-	ctx, span := tracer.Start(ctx, "passing text to tts")
-	defer span.End()
-textLoop:
-	// TODO: This can panic if active turn ends up being nil, there should be a
-	// way around this, specifically, for the active turn to handle this loop
-	for chunk := range o.turns.activeTurn.textBuffer.Chunks {
-		activeTurn := o.turns.activeTurn
-		if activeTurn != nil && activeTurn.Cancelled {
-			break textLoop
-		}
-		if o.orchestrateOptions.onResponse != nil {
-			o.orchestrateOptions.onResponse(chunk)
-		}
-		if o.textToSpeechClient != nil {
-			if err := o.textToSpeechClient.SendText(chunk); err != nil {
-				log.Printf("Failed to send text to deepgram: %v", err)
-			}
-			if o.audioOutput != nil {
-				if _, ok := o.audioOutput.(AudioOutputV1); ok {
-					if strings.ContainsAny(chunk, ".?!") {
-						if err := o.textToSpeechClient.FlushBuffer(); err != nil {
-							log.Printf("Failed to flush buffer: %v", err)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if o.textToSpeechClient != nil {
-		if err := o.textToSpeechClient.FlushBuffer(); err != nil {
-			log.Printf("Failed to flush buffer: %v", err)
-		}
-	} else if activeTurn := o.turns.activeTurn; activeTurn != nil && !activeTurn.Cancelled {
-		o.finaliseActiveTurn()
-	}
-
-	if o.orchestrateOptions.onResponseEnd != nil {
-		o.orchestrateOptions.onResponseEnd()
-	}
-
-}
 
 // TODO: Optimize memory at some point, it is not a great idea to just append
 // to a slice when we already consumed a part of it. But it needs to be synced

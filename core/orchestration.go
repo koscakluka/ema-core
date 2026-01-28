@@ -120,8 +120,8 @@ func (o *Orchestrator) QueuePrompt(prompt string) {
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
 	o.IsSpeaking = isSpeaking
-	if activeTurn := o.turns.activeTurn; activeTurn != nil {
-		activeTurn.audioBuffer.AddAudio([]byte{})
+	if activeTurn := o.turns.activeTurn; activeTurn != nil && !isSpeaking {
+		activeTurn.StopSpeaking()
 	}
 	if o.audioOutput != nil {
 		o.audioOutput.ClearBuffer()

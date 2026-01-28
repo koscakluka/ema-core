@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/koscakluka/ema-core/core/texttospeech"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 func (o *Orchestrator) initTTS() {
@@ -33,97 +31,6 @@ func (o *Orchestrator) initTTS() {
 			log.Printf("Failed to open deepgram speech stream: %v", err)
 		}
 	}
-}
-
-func (o *Orchestrator) passSpeechToAudioOutput(ctx context.Context) {
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			if activeTurn := o.turns.activeTurn; activeTurn != nil {
-				activeTurn.audioBuffer.Clear()
-			}
-		case <-done:
-		}
-	}()
-
-	_, span := tracer.Start(ctx, "passing speech to audio output")
-	defer span.End()
-bufferReadingLoop:
-	// TODO: This can panic if active turn ends up being nil, there should be a
-	// way around this, specifically, for the active turn to handle this loop
-	for audioOrMark := range o.turns.activeTurn.audioBuffer.Audio {
-		switch audioOrMark.Type {
-		case "audio":
-			audio := audioOrMark.Audio
-			if o.orchestrateOptions.onAudio != nil {
-				o.orchestrateOptions.onAudio(audio)
-			}
-
-			if o.audioOutput == nil {
-				continue bufferReadingLoop
-			}
-
-			if activeTurn := o.turns.activeTurn; !o.IsSpeaking || activeTurn != nil && activeTurn.Cancelled {
-				o.audioOutput.ClearBuffer()
-				break bufferReadingLoop
-			}
-
-			o.audioOutput.SendAudio(audio)
-
-		case "mark":
-			mark := audioOrMark.Mark
-			span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark)))
-			if o.audioOutput != nil {
-				switch o.audioOutput.(type) {
-				case AudioOutputV1:
-					o.audioOutput.(AudioOutputV1).Mark(mark, func(mark string) {
-						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
-						if activeTurn := o.turns.activeTurn; activeTurn != nil {
-							activeTurn.audioBuffer.MarkPlayed(mark)
-						}
-					})
-				case AudioOutputV0:
-					go func() {
-						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v0")))
-						o.audioOutput.(AudioOutputV0).AwaitMark()
-						if activeTurn := o.turns.activeTurn; activeTurn != nil {
-							activeTurn.audioBuffer.MarkPlayed(mark)
-						}
-					}()
-				}
-			} else {
-				span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.Bool("audio_output.set", false)))
-				if activeTurn := o.turns.activeTurn; activeTurn != nil {
-					activeTurn.audioBuffer.MarkPlayed(mark)
-				}
-			}
-		}
-	}
-
-	defer func() {
-		o.finaliseActiveTurn()
-	}()
-
-	if o.orchestrateOptions.onAudioEnded != nil {
-		if activeTurn := o.turns.activeTurn; activeTurn != nil {
-			o.orchestrateOptions.onAudioEnded(activeTurn.audioBuffer.audioTranscript)
-		}
-	}
-
-	if o.audioOutput == nil {
-		return
-	}
-
-	// TODO: Figure out why this is needed
-	o.audioOutput.SendAudio([]byte{})
-
-	if activeTurn := o.turns.activeTurn; !o.IsSpeaking || activeTurn != nil && activeTurn.Cancelled {
-		o.audioOutput.ClearBuffer()
-		return
-	}
-
 }
 
 // TODO: Calculate the error factor based on marks' timestamps
