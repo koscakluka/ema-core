@@ -115,6 +115,7 @@ func (o *Orchestrator) QueuePrompt(prompt string) {
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
 	o.IsSpeaking = isSpeaking
+	o.outputAudioBuffer.AddAudio([]byte{})
 	if o.audioOutput != nil {
 		o.audioOutput.ClearBuffer()
 	}
