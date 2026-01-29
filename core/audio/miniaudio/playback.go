@@ -34,62 +34,17 @@ func (c *playbackClient) Init(audioContext *malgo.AllocatedContext) error {
 	c.config.Playback.Format = format
 	c.config.Playback.Channels = uint32(channels)
 	c.config.Alsa.NoMMap = 1
-	c.config.PeriodSizeInFrames = 480 // ~10ms at 48kHz
+	c.config.PeriodSizeInFrames = 480 / 2 // ~10ms at 48kHz
 	c.config.Periods = 4
 
 	c.audioContext = audioContext
 
 	var err error
-	if c.device, err = malgo.InitDevice(c.audioContext.Context, c.config, malgo.DeviceCallbacks{
-		Data: func(pOutput, _ []byte, frameCount uint32) {
-			need := int(frameCount) * bytesPerFrame
-			written := 0
-
-			for written < need {
-				var cur []byte = nil
-				if len(c.leftoverAudio) > 0 {
-					passedMarks := 0
-					for i, mark := range c.marks {
-						if mark.position >= need {
-							c.marks[i].position -= need
-						} else {
-							passedMarks++
-						}
-					}
-					if passedMarks > 0 {
-						go func() {
-							c.marksMu.Lock()
-							defer c.marksMu.Unlock()
-							toCall := c.marks[:passedMarks]
-							c.marks = c.marks[passedMarks:]
-							for _, mark := range toCall {
-								mark.callback(mark.name)
-							}
-						}()
-					}
-					if len(c.leftoverAudio) < need {
-						cur = c.leftoverAudio
-						c.audioMu.Lock()
-						c.leftoverAudio = make([]byte, 0)
-						c.audioMu.Unlock()
-					} else {
-						cur = c.leftoverAudio[:need]
-						c.audioMu.Lock()
-						c.leftoverAudio = c.leftoverAudio[need:]
-						c.audioMu.Unlock()
-					}
-				}
-				if cur == nil {
-					for i := written; i < need; i++ {
-						pOutput[i] = 0
-					}
-					break
-				}
-				n := copy(pOutput[written:need], cur)
-				written += n
-			}
-		},
-	}); err != nil {
+	if c.device, err = malgo.InitDevice(
+		c.audioContext.Context,
+		c.config,
+		malgo.DeviceCallbacks{Data: c.processAudio(bytesPerFrame)},
+	); err != nil {
 		return err
 	}
 
@@ -185,4 +140,51 @@ type playbackMark struct {
 	name     string
 	position int
 	callback func(string)
+}
+
+func (c *playbackClient) processAudio(bytesPerFrame int) malgo.DataProc {
+	return func(pOutput, _ []byte, frameCount uint32) {
+		need := int(frameCount) * bytesPerFrame
+		c.processMarks(need)
+
+		if len(c.leftoverAudio) == 0 {
+			// TODO: Process all marks, but there probably shouldn't be any
+			return
+		}
+
+		if len(c.leftoverAudio) < need {
+			_ = copy(pOutput, c.leftoverAudio)
+			c.audioMu.Lock()
+			c.leftoverAudio = nil
+			c.audioMu.Unlock()
+			return
+		}
+
+		_ = copy(pOutput, c.leftoverAudio[:need])
+		c.audioMu.Lock()
+		c.leftoverAudio = c.leftoverAudio[need:]
+		c.audioMu.Unlock()
+	}
+}
+
+func (c *playbackClient) processMarks(until int) {
+	passedMarks := 0
+	for i, mark := range c.marks {
+		if mark.position >= until {
+			c.marks[i].position -= until
+		} else {
+			passedMarks++
+		}
+	}
+	if passedMarks > 0 {
+		c.marksMu.Lock()
+		toCall := c.marks[:passedMarks]
+		c.marks = c.marks[passedMarks:]
+		defer c.marksMu.Unlock()
+		go func() {
+			for _, mark := range toCall {
+				mark.callback(mark.name)
+			}
+		}()
+	}
 }
