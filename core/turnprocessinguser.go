@@ -8,8 +8,6 @@ import (
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/speechtotext"
 	"github.com/koscakluka/ema-core/internal/utils"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 func (o *Orchestrator) initSST() {
@@ -66,8 +64,6 @@ func (o *Orchestrator) processUserTurn(prompt string) {
 			interruptionID = nil
 		} else {
 			ctx = activeTurn.ctx
-			span := trace.SpanFromContext(ctx)
-			span.AddEvent("interruption", trace.WithAttributes(attribute.Int64("interruption.id", *interruptionID)))
 		}
 	}
 

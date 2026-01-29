@@ -10,6 +10,7 @@ import (
 
 	"github.com/koscakluka/ema-core/core/llms"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -20,9 +21,9 @@ func (o *Orchestrator) startAssistantLoop() {
 		}
 		o.promptEnded.Add(1)
 
-		ctx, mainSpan := tracer.Start(o.baseContext, "process turn")
-		mainSpan.AddEvent("taken out of queue", trace.WithAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds())))
-		mainSpan.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
+		ctx, span := tracer.Start(o.baseContext, "process turn")
+		span.AddEvent("taken out of queue", trace.WithAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds())))
+		span.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
 		transcript := promptQueueItem.content
 
 		messages := o.turns
@@ -31,7 +32,7 @@ func (o *Orchestrator) startAssistantLoop() {
 			Content: transcript,
 		})
 
-		if err := o.turns.startActiveTurn(ctx,
+		if err := o.turns.processActiveTurn(ctx,
 			activeTurnComponents{
 				TextToSpeechClient: o.textToSpeechClient,
 				AudioOutput:        o.audioOutput,
@@ -90,7 +91,9 @@ func (o *Orchestrator) startAssistantLoop() {
 			},
 			activeTurnConfig{IsSpeaking: o.IsSpeaking},
 		); err != nil {
-			mainSpan.RecordError(fmt.Errorf("failed to set active turn: %v", err))
+			err := fmt.Errorf("failed to process active turn: %v", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			// TODO: Probably should be able to requeue the prompt or something
 			// here
 		}
@@ -120,8 +123,7 @@ func (o *Orchestrator) processPromptOld(ctx context.Context, prompt string, mess
 }
 
 func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt string, originalTurns []llms.Turn, buffer *textBuffer) (*llms.Turn, error) {
-	ctx, span := tracer.Start(ctx, "process streaming")
-	defer span.End()
+	span := trace.SpanFromContext(ctx)
 	if o.llm.(LLMWithStream) == nil {
 		return nil, fmt.Errorf("LLM does not support streaming")
 	}
@@ -149,6 +151,7 @@ func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt stri
 		for chunk, err := range stream.Chunks(ctx) {
 			if err != nil {
 				// TODO: handle error
+				span.RecordError(err)
 				break
 			}
 

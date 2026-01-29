@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -21,6 +22,8 @@ type activeTurn struct {
 	components activeTurnComponents
 	callbacks  activeTurnCallbacks
 	config     activeTurnConfig
+
+	err error
 }
 
 type activeTurnComponents struct {
@@ -106,7 +109,7 @@ func (t *activeTurn) Unpause() {
 	t.audioBuffer.UnpauseAudio()
 }
 
-func (t *activeTurn) Finalise() {
+func (t *activeTurn) finalise() {
 	t.Turn.Stage = llms.TurnStageFinalized
 	t.callbacks.OnFinalise(t)
 }
@@ -119,14 +122,17 @@ func (t *activeTurn) IsFinalized() bool {
 	return t.Stage == llms.TurnStageFinalized || t.Cancelled
 }
 
-func (t *activeTurn) generateResponse() {
-	ctx, span := tracer.Start(t.ctx, "generate response")
+func (t *activeTurn) generateResponse(ctx context.Context) error {
+	ctx, span := tracer.Start(ctx, "generate response")
 	defer span.End()
+
 	response, err := t.components.ResponseGenerator(ctx, &t.textBuffer)
 	if err != nil {
+		err := fmt.Errorf("failed to generate response: %w", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return
+		t.err = errors.Join(t.err, err)
+		return err
 	}
 	if response != nil {
 		var toolCalls []string
@@ -142,20 +148,22 @@ func (t *activeTurn) generateResponse() {
 		t.Content = response.Content
 		t.ToolCalls = response.ToolCalls
 	}
+
+	return nil
 }
 
-func (t *activeTurn) processResponseText() {
+func (t *activeTurn) processResponseText(ctx context.Context) error {
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
-		case <-t.ctx.Done():
+		case <-ctx.Done():
 			t.textBuffer.Clear()
 		case <-done:
 		}
 	}()
 
-	_, span := tracer.Start(t.ctx, "passing text to tts")
+	_, span := tracer.Start(ctx, "passing text to tts")
 	defer span.End()
 textLoop:
 	for chunk := range t.textBuffer.Chunks {
@@ -185,28 +193,27 @@ textLoop:
 			span.RecordError(fmt.Errorf("failed to flush buffer: %w", err))
 		}
 	} else if !t.Cancelled {
-		t.Finalise()
+		t.finalise()
 	}
 
 	t.callbacks.OnResponseTextEnd()
+	return nil
 }
 
-func (t *activeTurn) processSpeech() {
+func (t *activeTurn) processSpeech(ctx context.Context) error {
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
-		case <-t.ctx.Done():
+		case <-ctx.Done():
 			t.audioBuffer.Clear()
 		case <-done:
 		}
 	}()
 
-	_, span := tracer.Start(t.ctx, "passing speech to audio output")
+	_, span := tracer.Start(ctx, "passing speech to audio output")
 	defer span.End()
 bufferReadingLoop:
-	// TODO: This can panic if active turn ends up being nil, there should be a
-	// way around this, specifically, for the active turn to handle this loop
 	for audioOrMark := range t.audioBuffer.Audio {
 		switch audioOrMark.Type {
 		case "audio":
@@ -226,15 +233,16 @@ bufferReadingLoop:
 
 		case "mark":
 			mark := audioOrMark.Mark
-			span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark)))
 			if t.components.AudioOutput != nil {
 				switch t.components.AudioOutput.(type) {
 				case AudioOutputV1:
+					span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
 					t.components.AudioOutput.(AudioOutputV1).Mark(mark, func(mark string) {
 						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
 						t.audioBuffer.MarkPlayed(mark)
 					})
 				case AudioOutputV0:
+					span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v0")))
 					go func() {
 						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v0")))
 						t.components.AudioOutput.(AudioOutputV0).AwaitMark()
@@ -242,18 +250,19 @@ bufferReadingLoop:
 					}()
 				}
 			} else {
+				span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.Bool("audio_output.set", false)))
 				span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.Bool("audio_output.set", false)))
 				t.audioBuffer.MarkPlayed(mark)
 			}
 		}
 	}
 
-	defer func() { t.Finalise() }()
+	defer func() { t.finalise() }()
 
 	t.callbacks.OnResponseSpeechEnd(t.audioBuffer.audioTranscript)
 
 	if t.components.AudioOutput == nil {
-		return
+		return nil
 	}
 
 	// TODO: Figure out why this is needed
@@ -262,5 +271,7 @@ bufferReadingLoop:
 	if !t.config.IsSpeaking || t.Cancelled {
 		t.components.AudioOutput.ClearBuffer()
 	}
+
+	return nil
 
 }

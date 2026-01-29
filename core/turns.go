@@ -4,12 +4,9 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
+	"sync"
 
 	"github.com/koscakluka/ema-core/core/llms"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 type Turns struct {
@@ -98,17 +95,32 @@ func (t *Turns) updateInterruption(id int64, update func(*llms.InterruptionV0)) 
 	}
 }
 
-func (t *Turns) startActiveTurn(ctx context.Context, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) error {
+func (t *Turns) processActiveTurn(ctx context.Context, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) error {
 	// TODO: active turn needs a mutex (not really but it would be nice)
 	if t.activeTurn != nil {
 		return fmt.Errorf("active turn already set")
 	}
 
-	t.activeTurn = newActiveTurn(ctx, components, callbacks, config)
-	go t.activeTurn.processResponseText()
-	go t.activeTurn.processSpeech()
+	activeTurn := newActiveTurn(ctx, components, callbacks, config)
+	t.activeTurn = activeTurn
+	ctx, cancel := context.WithCancel(ctx)
+	run := func(ctx context.Context, wg *sync.WaitGroup, f func(context.Context) error) {
+		if err := f(ctx); err != nil {
+			cancel()
+		}
+		wg.Done()
+	}
 
-	t.activeTurn.generateResponse()
+	wg := &sync.WaitGroup{}
+	wg.Add(3)
+	go run(ctx, wg, t.activeTurn.processResponseText)
+	go run(ctx, wg, t.activeTurn.processSpeech)
+	go run(ctx, wg, t.activeTurn.generateResponse)
+
+	wg.Wait()
+	if activeTurn.err != nil {
+		return fmt.Errorf("one or more active turn processes failed: %w", activeTurn.err)
+	}
 
 	return nil
 }
