@@ -10,13 +10,37 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `core/WithInterruptionHandlerV2` option and `core/InterruptionHandlerV2`
+  interface to pass a context-aware interruption handler
+- `core/texttospeech/deepgram.TextToSpeechClient.SetVoice` method
+- `core/texttospeech/deepgram.TextToSpeechClient.Restart` method for resetting
+  a streaming session
+
 ### Changed
 
+- **Breaking:** module path renamed to `github.com/koscakluka/ema-core` (all
+  imports updated)
+- `core/Orchestrator.Orchestrate` now accepts a base context used across
+  agent/tool calls and interruption handling
+- `core/llms.Stream.Chunks` now requires a `context.Context` for streaming
+  iteration
+- `core/Orchestrator` now runs turn processing through the active-turn pipeline
+  (`core/activeTurn`), affecting how speaking, pausing, and cancellation
+  propagate to audio/text buffers
+
 ### Deprecated
+
+- `core/ClassifyWithContext` option (since v0.0.14) for interruption
+  classification in favor of interruption handlers
 
 ### Removed
 
 ### Fixed
+
+- `core/audio/miniaudio` playback processing to reduce artifacts and mark
+  handling issues
+- `core/texttospeech/deepgram.TextToSpeechClient` restart behavior to preserve
+  post-restart text buffering
 
 ### Security
 
@@ -40,7 +64,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `core/context/TurnsV0` interface
 - `core/interruptions/OrchestratorV0` interface
 - `core/interruptions/llm` package with a simple interruption handler
-- `core/llms/Response` struct as a future replacement for depricated
+- `core/llms/Response` struct as a future replacement for deprecated
   `core/llms/Message`
 - `core/llms/InterruptionV0` struct
 - `core/llms/ToolCall.Response` field to store the response of the tool call
@@ -49,7 +73,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `core/llms/Turn.Cancelled` field to replace the cancelled flag in
   `core/Orchestrator`
 - `core/llms/Turn.Stage` field, `core/llms/TurnStage` type and accompanying enum
-- `core/llms/Turn.Interruptions` field for storing interruptions that happend in
+- `core/llms/Turn.Interruptions` field for storing interruptions that happened in
   a particular turn
 - `core/audio/miniaudio/playbackClient.Mark` method
 
@@ -67,7 +91,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `core/llms/ToolCall` uses a flat structure instead of a one with a nested
   `Function` field
 - `core/llms/WithSystemPrompt` saves the prompt in `Instructions` field in
-  addition to using the first message in the depricated `Messages` field, to allow
+  addition to using the first message in the deprecated `Messages` field, to allow
   the prompt to be used with `Turns` field
 - `core/llms/ToMessages` and `core/llms/ToTurns` functions convert to between
   `Message` slice and `Turn` slice considering the new `TurnRoles` type
