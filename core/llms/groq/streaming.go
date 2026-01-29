@@ -79,6 +79,7 @@ func (s *Stream) Chunks(ctx context.Context) func(func(llms.StreamChunk, error) 
 		}
 		span.SetAttributes(attribute.Float64("response.request_to_first_token_time", time.Since(requestToFirstTokenTime).Seconds()))
 		span.AddEvent("received first chunk")
+		requestToFirstTokenTime = time.Time{}
 	}
 
 	// TODO: See if this needs the ctx passed, or if the context should be saved.
