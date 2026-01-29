@@ -32,6 +32,12 @@ func (o *Orchestrator) startAssistantLoop() {
 			Content: transcript,
 		})
 
+		if client, ok := o.textToSpeechClient.(interface{ Restart(context.Context) error }); ok {
+			if err := client.Restart(ctx); err != nil {
+				log.Printf("Failed to restart deepgram client: %v", err)
+			}
+		}
+
 		if err := o.turns.processActiveTurn(ctx,
 			activeTurnComponents{
 				TextToSpeechClient: o.textToSpeechClient,
