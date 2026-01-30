@@ -14,6 +14,7 @@ type textBuffer struct {
 	chunksConsumed int
 	chunksDone     bool
 	chunksSignal   *sync.Cond
+	cleared        bool
 }
 
 func newTextBuffer() *textBuffer {
@@ -45,11 +46,12 @@ func (b *textBuffer) Chunks(yield func(string) bool) {
 			}
 		}
 		if b.chunksDone && b.chunksConsumed == len(b.chunks) {
+		b.updateSignal.L.Lock()
+		b.updateSignal.Wait()
+		b.updateSignal.L.Unlock()
+		if b.cleared {
 			return
 		}
-		b.chunksSignal.L.Lock()
-		b.chunksSignal.Wait()
-		b.chunksSignal.L.Unlock()
 	}
 }
 
@@ -58,10 +60,6 @@ func (b *textBuffer) AllChunks() string {
 }
 
 func (b *textBuffer) Clear() {
-	// TODO: This should probably be locked
-	b.chunks = []string{}
-	b.chunksConsumed = 0
-	b.chunksDone = true
-	b.chunksSignal.Broadcast()
-	b.chunksDone = false
+	b.cleared = true
+	b.updateSignal.Broadcast()
 }

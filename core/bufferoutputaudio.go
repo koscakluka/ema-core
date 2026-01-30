@@ -33,6 +33,8 @@ type audioBuffer struct {
 
 	paused       bool
 	pausedSignal *sync.Cond
+
+	cleared bool
 }
 
 func newAudioBuffer() *audioBuffer {
@@ -58,6 +60,9 @@ func (b *audioBuffer) Audio(yield func(audio audioOrMark) bool) {
 				b.pausedSignal.L.Lock()
 				b.pausedSignal.Wait()
 				b.pausedSignal.L.Unlock()
+				if b.cleared {
+					return
+				}
 			}
 			audio := b.audio[b.audioConsumed]
 			b.audioConsumed++
@@ -90,6 +95,9 @@ func (b *audioBuffer) Audio(yield func(audio audioOrMark) bool) {
 		b.audioSignal.L.Lock()
 		b.audioSignal.Wait()
 		b.audioSignal.L.Unlock()
+		if b.cleared {
+			return
+		}
 	}
 }
 
@@ -167,21 +175,9 @@ func (b *audioBuffer) UnpauseAudio() {
 }
 
 func (b *audioBuffer) Clear() {
-	// TODO: This should probably be locked
-	b.chunksDone = true
-	b.paused = false
-	b.audio = [][]byte{}
-	b.audioConsumed = 0
-	b.audioDone = true
+	b.cleared = true
+	b.pausedSignal.Broadcast()
 	b.audioSignal.Broadcast()
-	b.audioDone = false
-	b.audioMarks = []struct {
-		name     string
-		position int
-	}{}
-	b.audioMarksConsumed = 0
-	b.audioPlayed = 0
-	b.audioPlayingStarted = time.Time{}
 }
 
 type audioOrMark struct {
