@@ -102,6 +102,7 @@ func (r *streamingRequest) processIncomingMessages(ctx context.Context) {
 		if err != nil {
 			// TODO: Actually figure out this message instead of comparing to a string
 			if err.Error() != "websocket: close 1000 (normal)" {
+				// TODO: Instrument
 				log.Printf("Websocket read error: %v", err)
 				if err := r.Cancel(); err != nil {
 					_ = r.Close() // Ignored on purpose
@@ -136,7 +137,7 @@ func (r *streamingRequest) processIncomingMessages(ctx context.Context) {
 					}
 
 					// nothing left to process, nortify the user of the end
-					if len(r.textBuffer) == 0 && r.textComplete {
+					if r.textComplete && (len(r.textBuffer) == 0 || (len(r.textBuffer) == 1 && r.textBuffer[0] == "")) {
 						r.options.SpeechEndedCallbackV0(r.report)
 						_ = r.Close() // TODO: See if we need to react on this error
 						return true
