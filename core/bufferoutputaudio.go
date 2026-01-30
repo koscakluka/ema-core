@@ -49,12 +49,13 @@ func (b *audioBuffer) AddAudio(audio []byte) {
 }
 
 func (b *audioBuffer) Audio(yield func(audio audioOrMark) bool) {
+	firstStart := sync.Once{}
 	for {
 		for len(b.audio) > b.internalPlayhead {
 			if ok := b.waitIfPaused(); !ok {
 				return
 			}
-
+			firstStart.Do(b.StartedPlaying)
 			if !yield(audioOrMark{Type: "audio", Audio: b.consumeNextChunk()}) {
 				return
 			}
@@ -157,8 +158,18 @@ func (b *audioBuffer) ConfirmMark(name string) {
 	}
 }
 
+func (b *audioBuffer) StartedPlaying() {
+	b.lastMarkTimestamp = time.Now()
+	// TODO: It would also be good to trigger a timer in case marks fail and
+	// we have to terminate the loop when we think the audio was supposed to end
+	// this seems to sometimes happen
+	// Account for latency and pausing
+}
+
 func (b *audioBuffer) AllAudioLoaded() {
 	b.allAudioLoaded = true
+	// TODO: Start timer to automatically terminate playing after audio is
+	// supposed to have ended
 }
 
 func (b *audioBuffer) Pause() {
@@ -207,7 +218,7 @@ func (b *audioBuffer) Resume() {
 	}
 
 	b.paused = false
-	b.lastMarkTimestamp = time.Time{}
+	b.StartedPlaying()
 	b.resumeSignal.Broadcast()
 }
 
