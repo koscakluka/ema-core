@@ -15,7 +15,7 @@ const errorFactor = 0.5
 type audioBuffer struct {
 	sampleRate int
 
-	chunksDone bool
+	allAudioLoaded bool
 
 	audio               [][]byte
 	audioConsumed       int
@@ -120,7 +120,8 @@ func (b *audioBuffer) MarkPlayed(name string) {
 			b.audioTranscript += name
 			b.audioPlayed = mark.position
 			b.audioPlayingStarted = time.Now()
-			if b.chunksDone && b.audioPlayed == len(b.audio) {
+			b.audioDone = true
+			if b.allAudioLoaded && b.audioPlayed == len(b.audio) {
 				b.audioDone = true
 				b.audioSignal.Broadcast()
 			}
@@ -129,8 +130,8 @@ func (b *audioBuffer) MarkPlayed(name string) {
 	}
 }
 
-func (b *audioBuffer) ChunksDone() {
-	b.chunksDone = true
+func (b *audioBuffer) AllAudioLoaded() {
+	b.allAudioLoaded = true
 }
 
 func (b *audioBuffer) PauseAudio() {

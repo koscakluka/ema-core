@@ -144,7 +144,6 @@ func (t *activeTurn) generateResponse(ctx context.Context) error {
 	}
 
 	t.textBuffer.ChunksDone()
-	t.audioBuffer.ChunksDone()
 	if t.IsMutable() {
 		t.Content = response.Content
 		t.ToolCalls = response.ToolCalls
@@ -248,6 +247,7 @@ textLoop:
 		}
 	}
 
+	t.audioBuffer.AllAudioLoaded()
 	if ttsClient != nil {
 		if err := ttsClient.FlushBuffer(); err != nil {
 			span.RecordError(fmt.Errorf("failed to send flush to tts: %w", err))
