@@ -175,8 +175,8 @@ func (t *activeTurn) processResponseText(ctx context.Context) error {
 				texttospeech.WithSpeechAudioCallback(t.audioBuffer.AddAudio),
 				texttospeech.WithSpeechMarkCallback(t.audioBuffer.Mark),
 				texttospeech.WithSpeechEndedCallbackV0(func(report texttospeech.SpeechEndedReport) {
-					// TODO: Do something smarter here
-					t.audioBuffer.Mark("")
+					// TODO: See if we need to do something smarter here
+					t.audioBuffer.AllAudioLoaded()
 				}),
 			}
 			if t.components.AudioOutput != nil {
@@ -247,7 +247,6 @@ textLoop:
 		}
 	}
 
-	t.audioBuffer.AllAudioLoaded()
 	if ttsClient != nil {
 		if err := ttsClient.FlushBuffer(); err != nil {
 			span.RecordError(fmt.Errorf("failed to send flush to tts: %w", err))
