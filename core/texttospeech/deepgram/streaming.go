@@ -103,10 +103,10 @@ func (r *streamingRequest) processIncomingMessages(ctx context.Context) {
 			// TODO: Actually figure out this message instead of comparing to a string
 			if err.Error() != "websocket: close 1000 (normal)" {
 				log.Printf("Websocket read error: %v", err)
-			}
-			if err := r.Cancel(); err != nil {
-				_ = r.Close() // Ignored on purpose
-				return
+				if err := r.Cancel(); err != nil {
+					_ = r.Close() // Ignored on purpose
+					return
+				}
 			}
 			return
 		}
@@ -126,7 +126,7 @@ func (r *streamingRequest) processIncomingMessages(ctx context.Context) {
 
 			switch parsedMsg.Type {
 			case "Flushed":
-				func() { // Grouped for defer
+				if done := func() bool { // Grouped for defer
 					r.textBufferMu.Lock()
 					defer r.textBufferMu.Unlock()
 					// notify the user we have reached the mark
@@ -139,7 +139,7 @@ func (r *streamingRequest) processIncomingMessages(ctx context.Context) {
 					if len(r.textBuffer) == 0 && r.textComplete {
 						r.options.SpeechEndedCallbackV0(r.report)
 						_ = r.Close() // TODO: See if we need to react on this error
-						return
+						return true
 					}
 
 					// send the next text if there is any
@@ -156,11 +156,16 @@ func (r *streamingRequest) processIncomingMessages(ctx context.Context) {
 							// log.Printf("Failed to flush deepgram buffer: %v", err)
 						}
 					}
-				}()
+					return false
+				}(); done {
+					return
+				}
 			case "Clear":
 				// TODO: Handle clear message
+				_ = r.Close()
 			case "Close":
 				// TODO: Handle close message
+				return
 			default:
 				// TODO: Handle unknown message types
 				// TODO: Instrument
@@ -234,6 +239,8 @@ func (r *streamingRequest) EndOfText() error {
 		return fmt.Errorf("streaming request closed")
 	} else if r.cancelled {
 		return fmt.Errorf("streaming request cancelled")
+	} else if r.textComplete {
+		return nil
 	}
 	r.textBufferMu.Lock()
 	defer r.textBufferMu.Unlock()
@@ -254,6 +261,8 @@ func (r *streamingRequest) EndOfText() error {
 func (r *streamingRequest) Cancel() error {
 	if r.closed {
 		return fmt.Errorf("streaming request closed")
+	} else if r.cancelled {
+		return nil
 	}
 
 	r.cancelled = true
@@ -268,12 +277,15 @@ func (r *streamingRequest) Cancel() error {
 }
 
 func (r *streamingRequest) Close() error {
-	r.closed = true
+	if r.closed {
+		return nil
+	}
 	if err := r.sendWebsocketMessage(closeMsg); err != nil {
 		if agressiveCloseErr := r.ws.Close(); agressiveCloseErr != nil {
 			return fmt.Errorf("failed to close websocket: %w", errors.Join(err, agressiveCloseErr))
 		}
 	}
+	r.closed = true
 	return nil
 }
 
