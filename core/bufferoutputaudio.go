@@ -3,14 +3,14 @@ package orchestration
 import (
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
-// TODO: Calculate the error factor based on marks' timestamps
+// TODO: Calculate the error factor based on marks' timestamps,
+// NOTE: This is probably caused by the fact that the array we pass is byte,
+// and the expected encoding is linear16, which is 2 bytes.
 const errorFactor = 0.5
-
-// TODO: Optimize memory at some point, it is not a great idea to just append
-// to a slice when we already consumed a part of it. But it needs to be synced
-// properly, probably a ring buffer makes sense.
 
 type audioBuffer struct {
 	sampleRate int
@@ -24,15 +24,19 @@ type audioBuffer struct {
 	lastMarkTimestamp time.Time
 	newAudioSignal    *sync.Cond
 
-	marks []struct {
-		name     string
-		position int
-	}
-	audioMarksConsumed int
+	marks []audioBufferMark
 
 	stopped      bool
 	paused       bool
 	resumeSignal *sync.Cond
+}
+
+type audioBufferMark struct {
+	ID          string
+	transcript  string
+	position    int
+	broadcasted bool
+	confirmed   bool
 }
 
 func newAudioBuffer() *audioBuffer {
@@ -59,30 +63,7 @@ func (b *audioBuffer) Audio(yield func(audio audioOrMark) bool) {
 			if !yield(audioOrMark{Type: "audio", Audio: b.consumeNextChunk()}) {
 				return
 			}
-			// TODO: Move outside the buffer, it should be communicated from
-			// the outside where there is more information of when it actually
-			// started
-			// It would also be good to trigger a timer in case marks fail and
-			// we have to terminate the loop when the audio was supposed to end
-			if b.lastMarkTimestamp.IsZero() {
-				b.lastMarkTimestamp = time.Now()
-			}
-			for ; b.audioMarksConsumed < len(b.marks); b.audioMarksConsumed++ {
-				if b.marks[b.audioMarksConsumed].position > b.internalPlayhead {
-					break
-				}
-				if !yield(audioOrMark{Type: "mark", Mark: b.marks[b.audioMarksConsumed].name}) {
-					return
-				}
-			}
-		}
-		// TODO: Why is this here? It doesn't make any sense, even if we break
-		// it was due to already having broadcasted the marks
-		for ; b.audioMarksConsumed < len(b.marks); b.audioMarksConsumed++ {
-			if b.marks[b.audioMarksConsumed].position > b.internalPlayhead {
-				break
-			}
-			if !yield(audioOrMark{Type: "mark", Mark: b.marks[b.audioMarksConsumed].name}) {
+			if ok := b.broadcastMarks(yield); !ok {
 				return
 			}
 		}
@@ -112,6 +93,23 @@ func (b *audioBuffer) consumeNextChunk() []byte {
 	return audio
 }
 
+func (b *audioBuffer) broadcastMarks(yield func(audioOrMark) bool) (ok bool) {
+	for i, mark := range b.marks {
+		if mark.confirmed || mark.broadcasted {
+			continue
+		} else if mark.position > b.internalPlayhead {
+			break
+		}
+
+		if !yield(audioOrMark{Type: "mark", Mark: mark.ID}) {
+			return false
+		}
+		b.marks[i].broadcasted = true
+	}
+
+	return true
+}
+
 func (b *audioBuffer) waitForNextAudio() (ok bool) {
 	for len(b.audio) == b.internalPlayhead {
 		if b.stopped || b.audioDone() {
@@ -128,28 +126,28 @@ func (b *audioBuffer) audioDone() bool {
 	return b.allAudioLoaded && b.externalPlayhead == len(b.audio)
 }
 
-func (b *audioBuffer) Mark(name string) {
-	// TODO: Expand marks to contain IDs so it can be used to identify the mark
-	// without sharing information
-	// Also add bools: broadcasted, confirmed
-	b.marks = append(b.marks, struct {
-		name     string
-		position int
-	}{
-		name:     name,
-		position: len(b.audio),
+func (b *audioBuffer) Mark(transcript string) {
+	b.marks = append(b.marks, audioBufferMark{
+		ID:         uuid.NewString(),
+		transcript: transcript,
+		position:   len(b.audio),
 	})
 	b.newAudioSignal.Broadcast()
 }
 
-// TODO: Rename to ConfirmMark
-func (b *audioBuffer) ConfirmMark(name string) {
-	for _, mark := range b.marks {
-		if mark.name == name {
+func (b *audioBuffer) ConfirmMark(id string) {
+	for i, mark := range b.marks {
+		if mark.confirmed {
+			continue
+		} else if !mark.broadcasted {
+			break
+		}
+		if mark.ID == id {
 			// "duration", audioDuration(b.audio[b.audioPlayed:mark.position], b.sampleRate),
 			// "actual_duration", time.Since(b.audioPlayingStarted),
+			b.marks[i].confirmed = true
 			b.externalPlayhead = mark.position
-			b.lastMarkTimestamp = time.Now()
+			b.StartedPlaying()
 			if b.allAudioLoaded && b.externalPlayhead == len(b.audio) {
 				b.newAudioSignal.Broadcast()
 			}
@@ -206,8 +204,7 @@ func (b *audioBuffer) rewind() {
 	b.internalPlayhead = b.externalPlayhead
 	for i, mark := range b.marks {
 		if mark.position > b.internalPlayhead {
-			b.audioMarksConsumed = i
-			break
+			b.marks[i].broadcasted = false
 		}
 	}
 }

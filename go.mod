@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/deepgram/deepgram-go-sdk v1.9.0
 	github.com/gen2brain/malgo v0.11.24
+	github.com/google/uuid v1.6.0
 	github.com/gordonklaus/portaudio v0.0.0-20230709114228-aafa478834f5
 	github.com/gorilla/websocket v1.5.3
 	github.com/invopop/jsonschema v0.13.0
