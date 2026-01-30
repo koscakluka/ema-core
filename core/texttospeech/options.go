@@ -62,6 +62,10 @@ func WithSpeechMarkCallback(callback func(string)) TextToSpeechOption {
 	}
 }
 
+// WithSpeechEndedCallbackV0 sets the callback for when the TTS client has
+// finished producing all required speech
+//
+// Not supported by all TTS clients
 func WithSpeechEndedCallbackV0(callback func(SpeechEndedReport)) TextToSpeechOption {
 	return func(o *TextToSpeechOptions) { o.SpeechEndedCallbackV0 = callback }
 }

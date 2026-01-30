@@ -25,7 +25,7 @@ type Orchestrator struct {
 
 	llm                    LLM
 	speechToTextClient     SpeechToText
-	textToSpeechClient     TextToSpeech
+	textToSpeechClient     textToSpeech
 	audioInput             AudioInput
 	audioOutput            audioOutput
 	interruptionClassifier InterruptionClassifier

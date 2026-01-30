@@ -2,7 +2,6 @@ package orchestration
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
 
@@ -12,12 +11,12 @@ import (
 func (o *Orchestrator) initTTS() {
 	if o.textToSpeechClient != nil {
 		ttsOptions := []texttospeech.TextToSpeechOption{
-			texttospeech.WithAudioCallback(func(audio []byte) {
+			texttospeech.WithSpeechAudioCallback(func(audio []byte) {
 				if activeTurn := o.turns.activeTurn; activeTurn != nil {
 					activeTurn.audioBuffer.AddAudio(audio)
 				}
 			}),
-			texttospeech.WithAudioEndedCallback(func(transcript string) {
+			texttospeech.WithSpeechMarkCallback(func(transcript string) {
 				if activeTurn := o.turns.activeTurn; activeTurn != nil {
 					activeTurn.audioBuffer.AudioMark(transcript)
 				}
@@ -27,8 +26,11 @@ func (o *Orchestrator) initTTS() {
 			ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(o.audioOutput.EncodingInfo()))
 		}
 
-		if err := o.textToSpeechClient.OpenStream(context.TODO(), ttsOptions...); err != nil {
-			log.Printf("Failed to open deepgram speech stream: %v", err)
+		if ttsClient, ok := o.textToSpeechClient.(TextToSpeech); ok {
+			if err := ttsClient.OpenStream(context.TODO(), ttsOptions...); err != nil {
+				// TODO: Instrument
+				log.Printf("Failed to open deepgram speech stream: %v", err)
+			}
 		}
 	}
 }

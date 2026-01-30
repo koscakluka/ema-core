@@ -9,6 +9,7 @@ import (
 	"log"
 
 	"github.com/koscakluka/ema-core/core/llms"
+	"github.com/koscakluka/ema-core/core/texttospeech"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -32,32 +33,65 @@ func (o *Orchestrator) startAssistantLoop() {
 			Content: transcript,
 		})
 
-		if client, ok := o.textToSpeechClient.(interface{ Restart(context.Context) error }); ok {
-			if err := client.Restart(ctx); err != nil {
-				log.Printf("Failed to restart deepgram client: %v", err)
+		components := activeTurnComponents{
+			AudioOutput: o.audioOutput,
+			ResponseGenerator: func(ctx context.Context, buffer *textBuffer) (*llms.Turn, error) {
+				switch o.llm.(type) {
+				case LLMWithStream:
+					return o.processStreaming(ctx, transcript, messages.turns, buffer)
+
+				// TODO: Implement this
+				// case LLMWithGeneralPrompt:
+				case LLMWithPrompt:
+					return o.processPromptOld(ctx, transcript, messages.turns, buffer)
+				default:
+					// Impossible state
+					return nil, fmt.Errorf("unknown LLM type")
+				}
+			},
+		}
+		// TODO: Move this into [Turns].processActiveTurn, there we can properly initialize it depending on the type we have
+		if o.textToSpeechClient != nil {
+			if client, ok := o.textToSpeechClient.(TextToSpeechV1); ok {
+				if speechGenerator, err := client.NewSpeechGeneratorV0(ctx, texttospeech.WithSpeechAudioCallback(func(audio []byte) {
+					if activeTurn := o.turns.activeTurn; activeTurn != nil {
+						activeTurn.audioBuffer.AddAudio(audio)
+					}
+				}),
+					texttospeech.WithSpeechMarkCallback(func(transcript string) {
+						if activeTurn := o.turns.activeTurn; activeTurn != nil {
+							activeTurn.audioBuffer.AudioMark(transcript)
+						}
+					}),
+					texttospeech.WithSpeechEndedCallbackV0(func(report texttospeech.SpeechEndedReport) {
+						if activeTurn := o.turns.activeTurn; activeTurn != nil {
+							activeTurn.audioBuffer.AudioMark("")
+						}
+					}),
+					texttospeech.WithEncodingInfo(o.audioOutput.EncodingInfo()),
+				); err != nil {
+					// TODO: Instrument
+					// log.Printf("Failed to create speech generator: %v", err)
+					if client, ok := o.textToSpeechClient.(TextToSpeech); ok {
+						components.TextToSpeechClient = client
+					}
+				} else {
+					components.TextToSpeechGenerator = speechGenerator
+				}
+
+			} else if client, ok := o.textToSpeechClient.(TextToSpeech); ok {
+				components.TextToSpeechClient = client
+				if client, ok := o.textToSpeechClient.(interface{ Restart(context.Context) error }); ok {
+					if err := client.Restart(ctx); err != nil {
+						log.Printf("Failed to restart deepgram client: %v", err)
+					}
+				}
+
 			}
 		}
 
-		if err := o.turns.processActiveTurn(ctx,
-			activeTurnComponents{
-				TextToSpeechClient: o.textToSpeechClient,
-				AudioOutput:        o.audioOutput,
-				ResponseGenerator: func(ctx context.Context, buffer *textBuffer) (*llms.Turn, error) {
-					switch o.llm.(type) {
-					case LLMWithStream:
-						return o.processStreaming(ctx, transcript, messages.turns, buffer)
-
-					// TODO: Implement this
-					// case LLMWithGeneralPrompt:
-					case LLMWithPrompt:
-						return o.processPromptOld(ctx, transcript, messages.turns, buffer)
-					default:
-						// Impossible state
-						return nil, fmt.Errorf("unknown LLM type")
-					}
-				},
-			},
-			activeTurnCallbacks{
+		if err := o.turns.processActiveTurn(ctx, components,
+			activeTurnCallbacks{ // TODO: See if these can be moved somewhere else and generalized, this could probably be moved to the top of the function
 				OnResponseText: func(response string) {
 					if o.orchestrateOptions.onResponse != nil {
 						o.orchestrateOptions.onResponse(response)
@@ -104,6 +138,9 @@ func (o *Orchestrator) startAssistantLoop() {
 			// here
 		}
 
+		if components.TextToSpeechGenerator != nil {
+			components.TextToSpeechGenerator.Close()
+		}
 	}
 }
 

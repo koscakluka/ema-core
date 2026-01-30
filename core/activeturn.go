@@ -27,9 +27,16 @@ type activeTurn struct {
 }
 
 type activeTurnComponents struct {
-	TextToSpeechClient TextToSpeech
-	AudioOutput        audioOutput
-	ResponseGenerator  func(context.Context, *textBuffer) (*llms.Turn, error) // TODO: Fix the signature to include prompt and "history"
+	TextToSpeechClient    TextToSpeech
+	TextToSpeechGenerator interface {
+		SendText(string) error
+		Mark() error
+		EndOfText() error
+		Cancel() error
+		Close() error
+	}
+	AudioOutput       audioOutput
+	ResponseGenerator func(context.Context, *textBuffer) (*llms.Turn, error) // TODO: Fix the signature to include prompt and "history"
 }
 
 type activeTurnCallbacks struct {
@@ -185,11 +192,28 @@ textLoop:
 					}
 				}
 			}
+		} else if t.components.TextToSpeechGenerator != nil {
+			if err := t.components.TextToSpeechGenerator.SendText(chunk); err != nil {
+				span.RecordError(fmt.Errorf("failed to send text to deepgram: %w", err))
+			}
+			if t.components.AudioOutput != nil {
+				if _, ok := t.components.AudioOutput.(AudioOutputV1); ok {
+					if strings.ContainsAny(chunk, ".?!") {
+						if err := t.components.TextToSpeechGenerator.Mark(); err != nil {
+							span.RecordError(fmt.Errorf("failed to flush buffer: %w", err))
+						}
+					}
+				}
+			}
 		}
 	}
 
 	if t.components.TextToSpeechClient != nil {
 		if err := t.components.TextToSpeechClient.FlushBuffer(); err != nil {
+			span.RecordError(fmt.Errorf("failed to flush buffer: %w", err))
+		}
+	} else if t.components.TextToSpeechGenerator != nil {
+		if err := t.components.TextToSpeechGenerator.EndOfText(); err != nil {
 			span.RecordError(fmt.Errorf("failed to flush buffer: %w", err))
 		}
 	} else if !t.Cancelled {
@@ -267,6 +291,7 @@ bufferReadingLoop:
 
 	// TODO: Figure out why this is needed
 	t.components.AudioOutput.SendAudio([]byte{})
+	t.components.AudioOutput.ClearBuffer()
 
 	if !t.config.IsSpeaking || t.Cancelled {
 		t.components.AudioOutput.ClearBuffer()

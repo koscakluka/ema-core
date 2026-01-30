@@ -52,6 +52,17 @@ func WithTextToSpeechClient(client TextToSpeech) OrchestratorOption {
 	}
 }
 
+type TextToSpeechV1 interface {
+	NewSpeechGeneratorV0(ctx context.Context, opts ...texttospeech.TextToSpeechOption) (texttospeech.SpeechGeneratorV0, error)
+}
+
+func WithTextToSpeechClientV1(client TextToSpeechV1) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.textToSpeechClient = client
+		o.IsSpeaking = true
+	}
+}
+
 type AudioInput interface {
 	EncodingInfo() audio.EncodingInfo
 	Stream(ctx context.Context, onAudio func(audio []byte)) error
@@ -217,3 +228,5 @@ type audioOutput interface {
 	SendAudio(audio []byte) error
 	ClearBuffer()
 }
+
+type textToSpeech any
