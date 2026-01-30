@@ -12,25 +12,25 @@ import (
 type textBuffer struct {
 	chunks         []string
 	chunksConsumed int
-	chunksDone     bool
-	chunksSignal   *sync.Cond
+	textComplete   bool
+	updateSignal   *sync.Cond
 	cleared        bool
 }
 
 func newTextBuffer() *textBuffer {
 	return &textBuffer{
-		chunksSignal: sync.NewCond(&sync.Mutex{}),
+		updateSignal: sync.NewCond(&sync.Mutex{}),
 	}
 }
 
 func (b *textBuffer) AddChunk(chunk string) {
 	b.chunks = append(b.chunks, chunk)
-	b.chunksSignal.Broadcast()
+	b.updateSignal.Broadcast()
 }
 
-func (b *textBuffer) ChunksDone() {
-	b.chunksDone = true
-	b.chunksSignal.Broadcast()
+func (b *textBuffer) TextComplete() {
+	b.textComplete = true
+	b.updateSignal.Broadcast()
 }
 
 func (b *textBuffer) Chunks(yield func(string) bool) {
@@ -45,7 +45,9 @@ func (b *textBuffer) Chunks(yield func(string) bool) {
 				return
 			}
 		}
-		if b.chunksDone && b.chunksConsumed == len(b.chunks) {
+		if b.textComplete && b.chunksConsumed == len(b.chunks) {
+			return
+		}
 		b.updateSignal.L.Lock()
 		b.updateSignal.Wait()
 		b.updateSignal.L.Unlock()
@@ -55,7 +57,7 @@ func (b *textBuffer) Chunks(yield func(string) bool) {
 	}
 }
 
-func (b *textBuffer) AllChunks() string {
+func (b *textBuffer) String() string {
 	return strings.Join(b.chunks, "")
 }
 

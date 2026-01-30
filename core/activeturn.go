@@ -143,7 +143,7 @@ func (t *activeTurn) generateResponse(ctx context.Context) error {
 		span.SetAttributes(attribute.StringSlice("assistant_turn.tool_calls", toolCalls))
 	}
 
-	t.textBuffer.ChunksDone()
+	t.textBuffer.TextComplete()
 	if t.IsMutable() {
 		t.Content = response.Content
 		t.ToolCalls = response.ToolCalls
@@ -326,7 +326,7 @@ bufferReadingLoop:
 
 	defer func() { t.finalise() }()
 
-	t.callbacks.OnResponseSpeechEnd(t.audioBuffer.audioTranscript)
+	t.callbacks.OnResponseSpeechEnd(t.textBuffer.String())
 
 	if t.components.AudioOutput == nil {
 		return nil
