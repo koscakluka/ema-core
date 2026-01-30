@@ -96,7 +96,6 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 
 	o.baseContext = ctx
 
-	o.initTTS()
 	o.initSST()
 
 	go o.startAssistantLoop()

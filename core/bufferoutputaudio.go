@@ -1,39 +1,9 @@
 package orchestration
 
 import (
-	"context"
 	"sync"
 	"time"
-
-	"github.com/koscakluka/ema-core/core/texttospeech"
 )
-
-func (o *Orchestrator) initTTS() {
-	if o.textToSpeechClient != nil {
-		ttsOptions := []texttospeech.TextToSpeechOption{
-			texttospeech.WithSpeechAudioCallback(func(audio []byte) {
-				if activeTurn := o.turns.activeTurn; activeTurn != nil {
-					activeTurn.audioBuffer.AddAudio(audio)
-				}
-			}),
-			texttospeech.WithSpeechMarkCallback(func(transcript string) {
-				if activeTurn := o.turns.activeTurn; activeTurn != nil {
-					activeTurn.audioBuffer.AudioMark(transcript)
-				}
-			}),
-		}
-		if o.audioOutput != nil {
-			ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(o.audioOutput.EncodingInfo()))
-		}
-
-		if ttsClient, ok := o.textToSpeechClient.(TextToSpeech); ok {
-			if err := ttsClient.OpenStream(context.TODO(), ttsOptions...); err != nil {
-				// TODO: Instrument
-				log.Printf("Failed to open deepgram speech stream: %v", err)
-			}
-		}
-	}
-}
 
 // TODO: Calculate the error factor based on marks' timestamps
 const errorFactor = 0.5

@@ -52,12 +52,14 @@ func (o *Orchestrator) startAssistantLoop() {
 		}
 		// TODO: Move this into [Turns].processActiveTurn, there we can properly initialize it depending on the type we have
 		if o.textToSpeechClient != nil {
+
 			if client, ok := o.textToSpeechClient.(TextToSpeechV1); ok {
-				if speechGenerator, err := client.NewSpeechGeneratorV0(ctx, texttospeech.WithSpeechAudioCallback(func(audio []byte) {
-					if activeTurn := o.turns.activeTurn; activeTurn != nil {
-						activeTurn.audioBuffer.AddAudio(audio)
-					}
-				}),
+				ttsOptions := []texttospeech.TextToSpeechOption{
+					texttospeech.WithSpeechAudioCallback(func(audio []byte) {
+						if activeTurn := o.turns.activeTurn; activeTurn != nil {
+							activeTurn.audioBuffer.AddAudio(audio)
+						}
+					}),
 					texttospeech.WithSpeechMarkCallback(func(transcript string) {
 						if activeTurn := o.turns.activeTurn; activeTurn != nil {
 							activeTurn.audioBuffer.AudioMark(transcript)
@@ -68,8 +70,12 @@ func (o *Orchestrator) startAssistantLoop() {
 							activeTurn.audioBuffer.AudioMark("")
 						}
 					}),
-					texttospeech.WithEncodingInfo(o.audioOutput.EncodingInfo()),
-				); err != nil {
+				}
+				if o.audioOutput != nil {
+					ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(o.audioOutput.EncodingInfo()))
+				}
+
+				if speechGenerator, err := client.NewSpeechGeneratorV0(ctx, ttsOptions...); err != nil {
 					// TODO: Instrument
 					// log.Printf("Failed to create speech generator: %v", err)
 					if client, ok := o.textToSpeechClient.(TextToSpeech); ok {
@@ -81,12 +87,26 @@ func (o *Orchestrator) startAssistantLoop() {
 
 			} else if client, ok := o.textToSpeechClient.(TextToSpeech); ok {
 				components.TextToSpeechClient = client
-				if client, ok := o.textToSpeechClient.(interface{ Restart(context.Context) error }); ok {
-					if err := client.Restart(ctx); err != nil {
-						log.Printf("Failed to restart deepgram client: %v", err)
-					}
+				ttsOptions := []texttospeech.TextToSpeechOption{
+					texttospeech.WithSpeechAudioCallback(func(audio []byte) {
+						if activeTurn := o.turns.activeTurn; activeTurn != nil {
+							activeTurn.audioBuffer.AddAudio(audio)
+						}
+					}),
+					texttospeech.WithSpeechMarkCallback(func(transcript string) {
+						if activeTurn := o.turns.activeTurn; activeTurn != nil {
+							activeTurn.audioBuffer.AudioMark(transcript)
+						}
+					}),
+				}
+				if o.audioOutput != nil {
+					ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(o.audioOutput.EncodingInfo()))
 				}
 
+				if err := client.OpenStream(context.TODO(), ttsOptions...); err != nil {
+					// TODO: Instrument
+					log.Printf("Failed to open deepgram speech stream: %v", err)
+				}
 			}
 		}
 
@@ -140,6 +160,10 @@ func (o *Orchestrator) startAssistantLoop() {
 
 		if components.TextToSpeechGenerator != nil {
 			components.TextToSpeechGenerator.Close()
+		} else if components.TextToSpeechClient != nil {
+			if client, ok := components.TextToSpeechClient.(interface{ Close(ctx context.Context) }); ok {
+				client.Close(ctx)
+			}
 		}
 	}
 }
