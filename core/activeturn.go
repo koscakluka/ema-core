@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/koscakluka/ema-core/core/llms"
+	"github.com/koscakluka/ema-core/core/texttospeech"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -27,16 +28,9 @@ type activeTurn struct {
 }
 
 type activeTurnComponents struct {
-	TextToSpeechClient    TextToSpeech
-	TextToSpeechGenerator interface {
-		SendText(string) error
-		Mark() error
-		EndOfText() error
-		Cancel() error
-		Close() error
-	}
-	AudioOutput       audioOutput
-	ResponseGenerator func(context.Context, *textBuffer) (*llms.Turn, error) // TODO: Fix the signature to include prompt and "history"
+	TextToSpeechClient textToSpeech
+	AudioOutput        audioOutput
+	ResponseGenerator  func(context.Context, *textBuffer) (*llms.Turn, error) // TODO: Fix the signature to include prompt and "history"
 }
 
 type activeTurnCallbacks struct {
@@ -172,6 +166,52 @@ func (t *activeTurn) processResponseText(ctx context.Context) error {
 
 	_, span := tracer.Start(ctx, "passing text to tts")
 	defer span.End()
+
+	var ttsGenerator texttospeech.SpeechGeneratorV0
+	var ttsClient TextToSpeech
+	if t.components.TextToSpeechClient != nil {
+
+		if client, ok := t.components.TextToSpeechClient.(TextToSpeechV1); ok {
+			ttsOptions := []texttospeech.TextToSpeechOption{
+				texttospeech.WithSpeechAudioCallback(t.audioBuffer.AddAudio),
+				texttospeech.WithSpeechMarkCallback(t.audioBuffer.AudioMark),
+				texttospeech.WithSpeechEndedCallbackV0(func(report texttospeech.SpeechEndedReport) {
+					// TODO: Do something smarter here
+					t.audioBuffer.AudioMark("")
+				}),
+			}
+			if t.components.AudioOutput != nil {
+				ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(t.components.AudioOutput.EncodingInfo()))
+			}
+
+			if speechGenerator, err := client.NewSpeechGeneratorV0(ctx, ttsOptions...); err != nil {
+				// TODO: Retry?
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return err
+			} else {
+				ttsGenerator = speechGenerator
+			}
+
+		} else if client, ok := t.components.TextToSpeechClient.(TextToSpeech); ok {
+			ttsOptions := []texttospeech.TextToSpeechOption{
+				texttospeech.WithSpeechAudioCallback(t.audioBuffer.AddAudio),
+				texttospeech.WithSpeechMarkCallback(t.audioBuffer.AudioMark),
+			}
+			if t.components.AudioOutput != nil {
+				ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(t.components.AudioOutput.EncodingInfo()))
+			}
+
+			if err := client.OpenStream(ctx, ttsOptions...); err != nil {
+				err := fmt.Errorf("failed to open tts stream: %w", err)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return err
+			}
+			ttsClient = client
+		}
+	}
+
 textLoop:
 	for chunk := range t.textBuffer.Chunks {
 		if t.Cancelled {
@@ -179,28 +219,28 @@ textLoop:
 		}
 		t.callbacks.OnResponseText(chunk)
 
-		if t.components.TextToSpeechClient != nil {
-			if err := t.components.TextToSpeechClient.SendText(chunk); err != nil {
-				span.RecordError(fmt.Errorf("failed to send text to deepgram: %w", err))
+		if ttsClient != nil {
+			if err := ttsClient.SendText(chunk); err != nil {
+				span.RecordError(fmt.Errorf("failed to send text to tts: %w", err))
 			}
 			if t.components.AudioOutput != nil {
 				if _, ok := t.components.AudioOutput.(AudioOutputV1); ok {
 					if strings.ContainsAny(chunk, ".?!") {
-						if err := t.components.TextToSpeechClient.FlushBuffer(); err != nil {
-							span.RecordError(fmt.Errorf("failed to flush buffer: %w", err))
+						if err := ttsClient.FlushBuffer(); err != nil {
+							span.RecordError(fmt.Errorf("failed to send flush to tts: %w", err))
 						}
 					}
 				}
 			}
-		} else if t.components.TextToSpeechGenerator != nil {
-			if err := t.components.TextToSpeechGenerator.SendText(chunk); err != nil {
-				span.RecordError(fmt.Errorf("failed to send text to deepgram: %w", err))
+		} else if ttsGenerator != nil {
+			if err := ttsGenerator.SendText(chunk); err != nil {
+				span.RecordError(fmt.Errorf("failed to send text to tts: %w", err))
 			}
 			if t.components.AudioOutput != nil {
 				if _, ok := t.components.AudioOutput.(AudioOutputV1); ok {
 					if strings.ContainsAny(chunk, ".?!") {
-						if err := t.components.TextToSpeechGenerator.Mark(); err != nil {
-							span.RecordError(fmt.Errorf("failed to flush buffer: %w", err))
+						if err := ttsGenerator.Mark(); err != nil {
+							span.RecordError(fmt.Errorf("failed to send mark to tts: %w", err))
 						}
 					}
 				}
@@ -208,13 +248,16 @@ textLoop:
 		}
 	}
 
-	if t.components.TextToSpeechClient != nil {
-		if err := t.components.TextToSpeechClient.FlushBuffer(); err != nil {
-			span.RecordError(fmt.Errorf("failed to flush buffer: %w", err))
+	if ttsClient != nil {
+		if err := ttsClient.FlushBuffer(); err != nil {
+			span.RecordError(fmt.Errorf("failed to send flush to tts: %w", err))
 		}
-	} else if t.components.TextToSpeechGenerator != nil {
-		if err := t.components.TextToSpeechGenerator.EndOfText(); err != nil {
-			span.RecordError(fmt.Errorf("failed to flush buffer: %w", err))
+	} else if ttsGenerator != nil {
+		if err := ttsGenerator.Mark(); err != nil {
+			span.RecordError(fmt.Errorf("failed to send mark to tts: %w", err))
+		}
+		if err := ttsGenerator.EndOfText(); err != nil {
+			span.RecordError(fmt.Errorf("failed to send end of text to tts: %w", err))
 		}
 	} else if !t.Cancelled {
 		t.finalise()

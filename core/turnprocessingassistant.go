@@ -9,7 +9,6 @@ import (
 	"log"
 
 	"github.com/koscakluka/ema-core/core/llms"
-	"github.com/koscakluka/ema-core/core/texttospeech"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -49,106 +48,47 @@ func (o *Orchestrator) startAssistantLoop() {
 					return nil, fmt.Errorf("unknown LLM type")
 				}
 			},
+			TextToSpeechClient: o.textToSpeechClient,
 		}
-		// TODO: Move this into [Turns].processActiveTurn, there we can properly initialize it depending on the type we have
-		if o.textToSpeechClient != nil {
-
-			if client, ok := o.textToSpeechClient.(TextToSpeechV1); ok {
-				ttsOptions := []texttospeech.TextToSpeechOption{
-					texttospeech.WithSpeechAudioCallback(func(audio []byte) {
-						if activeTurn := o.turns.activeTurn; activeTurn != nil {
-							activeTurn.audioBuffer.AddAudio(audio)
-						}
-					}),
-					texttospeech.WithSpeechMarkCallback(func(transcript string) {
-						if activeTurn := o.turns.activeTurn; activeTurn != nil {
-							activeTurn.audioBuffer.AudioMark(transcript)
-						}
-					}),
-					texttospeech.WithSpeechEndedCallbackV0(func(report texttospeech.SpeechEndedReport) {
-						if activeTurn := o.turns.activeTurn; activeTurn != nil {
-							activeTurn.audioBuffer.AudioMark("")
-						}
-					}),
+		callbacks := activeTurnCallbacks{ // TODO: See if these can be moved somewhere else and generalized, this could probably be moved to the top of the function
+			OnResponseText: func(response string) {
+				if o.orchestrateOptions.onResponse != nil {
+					o.orchestrateOptions.onResponse(response)
 				}
-				if o.audioOutput != nil {
-					ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(o.audioOutput.EncodingInfo()))
-				}
-
-				if speechGenerator, err := client.NewSpeechGeneratorV0(ctx, ttsOptions...); err != nil {
-					// TODO: Instrument
-					// log.Printf("Failed to create speech generator: %v", err)
-					if client, ok := o.textToSpeechClient.(TextToSpeech); ok {
-						components.TextToSpeechClient = client
-					}
-				} else {
-					components.TextToSpeechGenerator = speechGenerator
-				}
-
-			} else if client, ok := o.textToSpeechClient.(TextToSpeech); ok {
-				components.TextToSpeechClient = client
-				ttsOptions := []texttospeech.TextToSpeechOption{
-					texttospeech.WithSpeechAudioCallback(func(audio []byte) {
-						if activeTurn := o.turns.activeTurn; activeTurn != nil {
-							activeTurn.audioBuffer.AddAudio(audio)
-						}
-					}),
-					texttospeech.WithSpeechMarkCallback(func(transcript string) {
-						if activeTurn := o.turns.activeTurn; activeTurn != nil {
-							activeTurn.audioBuffer.AudioMark(transcript)
-						}
-					}),
-				}
-				if o.audioOutput != nil {
-					ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(o.audioOutput.EncodingInfo()))
-				}
-
-				if err := client.OpenStream(context.TODO(), ttsOptions...); err != nil {
-					// TODO: Instrument
-					log.Printf("Failed to open deepgram speech stream: %v", err)
-				}
-			}
-		}
-
-		if err := o.turns.processActiveTurn(ctx, components,
-			activeTurnCallbacks{ // TODO: See if these can be moved somewhere else and generalized, this could probably be moved to the top of the function
-				OnResponseText: func(response string) {
-					if o.orchestrateOptions.onResponse != nil {
-						o.orchestrateOptions.onResponse(response)
-					}
-				},
-				OnResponseTextEnd: func() {
-					if o.orchestrateOptions.onResponseEnd != nil {
-						o.orchestrateOptions.onResponseEnd()
-					}
-				},
-				OnResponseSpeech: func(audio []byte) {
-					if o.orchestrateOptions.onAudio != nil {
-						o.orchestrateOptions.onAudio(audio)
-					}
-				},
-				OnResponseSpeechEnd: func(transcript string) {
-					if o.orchestrateOptions.onAudioEnded != nil {
-						o.orchestrateOptions.onAudioEnded(transcript)
-					}
-				},
-				OnFinalise: func(activeTurn *activeTurn) {
-					span := trace.SpanFromContext(activeTurn.ctx)
-					interruptionTypes := []string{}
-					for _, interruption := range activeTurn.Interruptions {
-						interruptionTypes = append(interruptionTypes, interruption.Type)
-					}
-					span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
-					span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.transcripts)))
-					span.End()
-					// TODO: Check if turns IDs match
-					if activeTurn := o.turns.activeTurn; activeTurn != nil {
-						o.turns.turns = append(o.turns.turns, activeTurn.Turn)
-						o.turns.activeTurn = nil
-						o.promptEnded.Done()
-					}
-				},
 			},
+			OnResponseTextEnd: func() {
+				if o.orchestrateOptions.onResponseEnd != nil {
+					o.orchestrateOptions.onResponseEnd()
+				}
+			},
+			OnResponseSpeech: func(audio []byte) {
+				if o.orchestrateOptions.onAudio != nil {
+					o.orchestrateOptions.onAudio(audio)
+				}
+			},
+			OnResponseSpeechEnd: func(transcript string) {
+				if o.orchestrateOptions.onAudioEnded != nil {
+					o.orchestrateOptions.onAudioEnded(transcript)
+				}
+			},
+			OnFinalise: func(activeTurn *activeTurn) {
+				span := trace.SpanFromContext(activeTurn.ctx)
+				interruptionTypes := []string{}
+				for _, interruption := range activeTurn.Interruptions {
+					interruptionTypes = append(interruptionTypes, interruption.Type)
+				}
+				span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
+				span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.transcripts)))
+				span.End()
+				// TODO: Check if turns IDs match
+				if activeTurn := o.turns.activeTurn; activeTurn != nil {
+					o.turns.turns = append(o.turns.turns, activeTurn.Turn)
+					o.turns.activeTurn = nil
+					o.promptEnded.Done()
+				}
+			},
+		}
+		if err := o.turns.processActiveTurn(ctx, components, callbacks,
 			activeTurnConfig{IsSpeaking: o.IsSpeaking},
 		); err != nil {
 			err := fmt.Errorf("failed to process active turn: %v", err)
@@ -158,13 +98,6 @@ func (o *Orchestrator) startAssistantLoop() {
 			// here
 		}
 
-		if components.TextToSpeechGenerator != nil {
-			components.TextToSpeechGenerator.Close()
-		} else if components.TextToSpeechClient != nil {
-			if client, ok := components.TextToSpeechClient.(interface{ Close(ctx context.Context) }); ok {
-				client.Close(ctx)
-			}
-		}
 	}
 }
 

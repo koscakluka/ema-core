@@ -113,10 +113,22 @@ func (t *Turns) processActiveTurn(ctx context.Context, components activeTurnComp
 
 	wg := &sync.WaitGroup{}
 	wg.Add(3)
-	go run(ctx, wg, t.activeTurn.processResponseText)
-	go run(ctx, wg, t.activeTurn.processSpeech)
 	go run(ctx, wg, t.activeTurn.generateResponse)
 
+	go run(ctx, wg, t.activeTurn.processResponseText)
+	go run(ctx, wg, t.activeTurn.processSpeech)
+
+	// TODO: This is not a great solution it might error if client was never opened,
+	// but it should work well enough for now
+	defer func() {
+		if components.TextToSpeechClient != nil {
+			if _, ok := components.TextToSpeechClient.(TextToSpeechV1); !ok {
+				if client, ok := components.TextToSpeechClient.(interface{ Close(ctx context.Context) }); ok {
+					client.Close(ctx)
+				}
+			}
+		}
+	}()
 	wg.Wait()
 	if activeTurn.err != nil {
 		return fmt.Errorf("one or more active turn processes failed: %w", activeTurn.err)
