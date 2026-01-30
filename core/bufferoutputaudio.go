@@ -22,13 +22,13 @@ type audioBuffer struct {
 	externalPlayhead int
 
 	lastMarkTimestamp time.Time
-	newAudioSignal    *sync.Cond
 
 	marks []audioBufferMark
 
-	stopped      bool
-	paused       bool
-	resumeSignal *sync.Cond
+	stopped bool
+	paused  bool
+
+	updateSignal chan struct{}
 }
 
 type audioBufferMark struct {
@@ -41,15 +41,14 @@ type audioBufferMark struct {
 
 func newAudioBuffer() *audioBuffer {
 	return &audioBuffer{
-		newAudioSignal: sync.NewCond(&sync.Mutex{}),
-		resumeSignal:   sync.NewCond(&sync.Mutex{}),
-		sampleRate:     1,
+		sampleRate:   1,
+		updateSignal: make(chan struct{}, 1),
 	}
 }
 
 func (b *audioBuffer) AddAudio(audio []byte) {
 	b.audio = append(b.audio, audio)
-	b.newAudioSignal.Broadcast()
+	b.signalUpdate()
 }
 
 func (b *audioBuffer) Audio(yield func(audio audioOrMark) bool) {
@@ -78,10 +77,7 @@ func (b *audioBuffer) waitIfPaused() (ok bool) {
 		if b.stopped {
 			return false
 		}
-
-		b.resumeSignal.L.Lock()
-		b.resumeSignal.Wait()
-		b.resumeSignal.L.Unlock()
+		<-b.updateSignal
 	}
 
 	return !b.stopped
@@ -115,9 +111,7 @@ func (b *audioBuffer) waitForNextAudio() (ok bool) {
 		if b.stopped || b.audioDone() {
 			return false
 		}
-		b.newAudioSignal.L.Lock()
-		b.newAudioSignal.Wait()
-		b.newAudioSignal.L.Unlock()
+		<-b.updateSignal
 	}
 	return !(b.stopped || b.audioDone())
 }
@@ -132,7 +126,7 @@ func (b *audioBuffer) Mark(transcript string) {
 		transcript: transcript,
 		position:   len(b.audio),
 	})
-	b.newAudioSignal.Broadcast()
+	b.signalUpdate()
 }
 
 func (b *audioBuffer) ConfirmMark(id string) {
@@ -149,7 +143,7 @@ func (b *audioBuffer) ConfirmMark(id string) {
 			b.externalPlayhead = mark.position
 			b.StartedPlaying()
 			if b.allAudioLoaded && b.externalPlayhead == len(b.audio) {
-				b.newAudioSignal.Broadcast()
+				b.signalUpdate()
 			}
 			break
 		}
@@ -161,7 +155,9 @@ func (b *audioBuffer) StartedPlaying() {
 	// TODO: It would also be good to trigger a timer in case marks fail and
 	// we have to terminate the loop when we think the audio was supposed to end
 	// this seems to sometimes happen
-	// Account for latency and pausing
+	// Account for latency and pausing + all audio needs to be loaded to trigger
+	// this, it needs to be run here because we are using this after the
+	// audio resumes
 }
 
 func (b *audioBuffer) AllAudioLoaded() {
@@ -177,9 +173,7 @@ func (b *audioBuffer) Pause() {
 
 	b.paused = true
 	b.rewind()
-	// NOTE This is necessary because we might be stuck in newAudioSignal.Wait
-	// if everything has already been played
-	b.newAudioSignal.Broadcast()
+	b.signalUpdate()
 }
 
 func (b *audioBuffer) rewind() {
@@ -216,13 +210,19 @@ func (b *audioBuffer) Resume() {
 
 	b.paused = false
 	b.StartedPlaying()
-	b.resumeSignal.Broadcast()
+	b.signalUpdate()
 }
 
 func (b *audioBuffer) Stop() {
 	b.stopped = true
-	b.resumeSignal.Broadcast()
-	b.newAudioSignal.Broadcast()
+	b.signalUpdate()
+}
+
+func (b *audioBuffer) signalUpdate() {
+	select {
+	case b.updateSignal <- struct{}{}:
+	default:
+	}
 }
 
 type audioOrMark struct {
