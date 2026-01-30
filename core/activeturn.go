@@ -103,11 +103,11 @@ func (t *activeTurn) StopSpeaking() {
 }
 
 func (t *activeTurn) Pause() {
-	t.audioBuffer.PauseAudio()
+	t.audioBuffer.Pause()
 }
 
 func (t *activeTurn) Unpause() {
-	t.audioBuffer.UnpauseAudio()
+	t.audioBuffer.Resume()
 }
 
 func (t *activeTurn) finalise() {
@@ -173,10 +173,10 @@ func (t *activeTurn) processResponseText(ctx context.Context) error {
 		if client, ok := t.components.TextToSpeechClient.(TextToSpeechV1); ok {
 			ttsOptions := []texttospeech.TextToSpeechOption{
 				texttospeech.WithSpeechAudioCallback(t.audioBuffer.AddAudio),
-				texttospeech.WithSpeechMarkCallback(t.audioBuffer.AudioMark),
+				texttospeech.WithSpeechMarkCallback(t.audioBuffer.Mark),
 				texttospeech.WithSpeechEndedCallbackV0(func(report texttospeech.SpeechEndedReport) {
 					// TODO: Do something smarter here
-					t.audioBuffer.AudioMark("")
+					t.audioBuffer.Mark("")
 				}),
 			}
 			if t.components.AudioOutput != nil {
@@ -195,7 +195,7 @@ func (t *activeTurn) processResponseText(ctx context.Context) error {
 		} else if client, ok := t.components.TextToSpeechClient.(TextToSpeech); ok {
 			ttsOptions := []texttospeech.TextToSpeechOption{
 				texttospeech.WithSpeechAudioCallback(t.audioBuffer.AddAudio),
-				texttospeech.WithSpeechMarkCallback(t.audioBuffer.AudioMark),
+				texttospeech.WithSpeechMarkCallback(t.audioBuffer.Mark),
 			}
 			if t.components.AudioOutput != nil {
 				ttsOptions = append(ttsOptions, texttospeech.WithEncodingInfo(t.components.AudioOutput.EncodingInfo()))
@@ -273,7 +273,7 @@ func (t *activeTurn) processSpeech(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			t.audioBuffer.Clear()
+			t.audioBuffer.Stop()
 		case <-done:
 		}
 	}()
@@ -306,20 +306,20 @@ bufferReadingLoop:
 					span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
 					t.components.AudioOutput.(AudioOutputV1).Mark(mark, func(mark string) {
 						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
-						t.audioBuffer.MarkPlayed(mark)
+						t.audioBuffer.ConfirmMark(mark)
 					})
 				case AudioOutputV0:
 					span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v0")))
 					go func() {
 						span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v0")))
 						t.components.AudioOutput.(AudioOutputV0).AwaitMark()
-						t.audioBuffer.MarkPlayed(mark)
+						t.audioBuffer.ConfirmMark(mark)
 					}()
 				}
 			} else {
 				span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.Bool("audio_output.set", false)))
 				span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.Bool("audio_output.set", false)))
-				t.audioBuffer.MarkPlayed(mark)
+				t.audioBuffer.ConfirmMark(mark)
 			}
 		}
 	}
