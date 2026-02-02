@@ -258,8 +258,6 @@ textLoop:
 		if err := ttsGenerator.EndOfText(); err != nil {
 			span.RecordError(fmt.Errorf("failed to send end of text to tts: %w", err))
 		}
-	} else if !t.Cancelled {
-		t.finalise()
 	}
 
 	t.callbacks.OnResponseTextEnd()
@@ -322,8 +320,6 @@ bufferReadingLoop:
 			}
 		}
 	}
-
-	defer func() { t.finalise() }()
 
 	t.callbacks.OnResponseSpeechEnd(t.textBuffer.String())
 

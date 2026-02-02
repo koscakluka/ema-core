@@ -130,6 +130,7 @@ func (t *Turns) processActiveTurn(ctx context.Context, components activeTurnComp
 		}
 	}()
 	wg.Wait()
+	activeTurn.finalise()
 	if activeTurn.err != nil {
 		return fmt.Errorf("one or more active turn processes failed: %w", activeTurn.err)
 	}
