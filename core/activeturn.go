@@ -223,8 +223,14 @@ func (t *activeTurn) processSpeech(ctx context.Context) error {
 		}
 	}()
 
+	t.tts.waitUntilInitialized()
+	if !t.tts.connected {
+		return nil
+	}
+
 	_, span := tracer.Start(ctx, "passing speech to audio output")
 	defer span.End()
+
 bufferReadingLoop:
 	for audioOrMark := range t.audioBuffer.Audio {
 		switch audioOrMark.Type {
@@ -255,7 +261,6 @@ bufferReadingLoop:
 	t.audioOut.Clear()
 
 	return nil
-
 }
 
 // NOTE: Helpers after this point are temporary and will be removed or replaced
@@ -270,6 +275,8 @@ type activeTurnTTS struct {
 	ttsClient    TextToSpeech
 	ttsGenerator texttospeech.SpeechGeneratorV0
 
+	initialized   chan struct{}
+	connected     bool
 	clientStarted bool
 }
 
@@ -278,6 +285,11 @@ type activeTurnTTS struct {
 // DO NOT USE! This is a temporary method and will be removed once we can remove
 // the old TTS version
 func (t *activeTurnTTS) init(ctx context.Context, turn *activeTurn) error {
+	if t.initialized == nil {
+		t.initialized = make(chan struct{})
+	}
+	defer close(t.initialized)
+
 	ttsOptions := []texttospeech.TextToSpeechOption{
 		texttospeech.WithSpeechAudioCallback(turn.audioBuffer.AddAudio),
 		texttospeech.WithSpeechMarkCallback(turn.audioBuffer.Mark),
@@ -298,14 +310,23 @@ func (t *activeTurnTTS) init(ctx context.Context, turn *activeTurn) error {
 				return fmt.Errorf("failed to create speech generator: %w", err)
 			}
 			t.ttsGenerator = speechGenerator
+			t.connected = true
 		} else if client, ok := turn.components.TextToSpeechClient.(TextToSpeech); ok {
 			if err := client.OpenStream(ctx, ttsOptions...); err != nil {
 				return fmt.Errorf("failed to open tts stream: %w", err)
 			}
 			t.ttsClient = client
+			t.connected = true
 		}
 	}
 	return nil
+}
+
+func (t *activeTurnTTS) waitUntilInitialized() {
+	for t.initialized == nil {
+		time.Sleep(time.Millisecond * 10)
+	}
+	<-t.initialized
 }
 
 func (t *activeTurnTTS) Close(ctx context.Context) error {
