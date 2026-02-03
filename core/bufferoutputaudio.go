@@ -99,10 +99,10 @@ func (b *audioBuffer) broadcastMarks(yield func(audioOrMark) bool) (ok bool) {
 			break
 		}
 
+		b.marks[i].broadcasted = true
 		if !yield(audioOrMark{Type: "mark", Mark: mark.ID}) {
 			return false
 		}
-		b.marks[i].broadcasted = true
 	}
 
 	return true
@@ -114,13 +114,11 @@ func (b *audioBuffer) waitForNextAudio(yield func(audioOrMark) bool) (ok bool) {
 			return false
 		}
 		<-b.updateSignal
-		// HACK: This is only here to support legacy TTS interface, sometimes
-		// the mark arrives after the audio has been fully played and it will
-		// make this an infinite waiting loop
-		if b.usingWithLegacyTTS {
-			if ok := b.broadcastMarks(yield); !ok {
-				return false
-			}
+		// HACK: This is only here because sometimes the mark arrives after the
+		// audio has been fully played and it will make this an infinite
+		// waiting loop
+		if ok := b.broadcastMarks(yield); !ok {
+			return false
 		}
 	}
 	return !(b.stopped || b.audioDone())
