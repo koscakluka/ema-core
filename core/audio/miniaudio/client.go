@@ -23,7 +23,7 @@ func NewClient() (*Client, error) {
 	audioCtx, err := malgo.InitContext(
 		nil,
 		malgo.ContextConfig{},
-		func(message string) { log.Println("malgo:", message) },
+		func(message string) {}, //log.Println("malgo:", message) },
 	)
 	if err != nil {
 		log.Fatalf("malgo InitContext failed: %v", err)
