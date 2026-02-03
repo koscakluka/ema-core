@@ -15,8 +15,10 @@ const errorFactor = 0.5
 type audioBuffer struct {
 	sampleRate int
 
-	audio          [][]byte
-	allAudioLoaded bool
+	audio                [][]byte
+	allAudioLoaded       bool
+	legacyAllAudioLoaded bool
+	usingWithLegacyTTS   bool // TODO: Remove this once we can remove the old TTS version
 
 	internalPlayhead int
 	externalPlayhead int
@@ -66,7 +68,7 @@ func (b *audioBuffer) Audio(yield func(audio audioOrMark) bool) {
 				return
 			}
 		}
-		if ok := b.waitForNextAudio(); !ok {
+		if ok := b.waitForNextAudio(yield); !ok {
 			return
 		}
 	}
@@ -106,18 +108,27 @@ func (b *audioBuffer) broadcastMarks(yield func(audioOrMark) bool) (ok bool) {
 	return true
 }
 
-func (b *audioBuffer) waitForNextAudio() (ok bool) {
+func (b *audioBuffer) waitForNextAudio(yield func(audioOrMark) bool) (ok bool) {
 	for len(b.audio) == b.internalPlayhead {
 		if b.stopped || b.audioDone() {
 			return false
 		}
 		<-b.updateSignal
+		// HACK: This is only here to support legacy TTS interface, sometimes
+		// the mark arrives after the audio has been fully played and it will
+		// make this an infinite waiting loop
+		if b.usingWithLegacyTTS {
+			if ok := b.broadcastMarks(yield); !ok {
+				return false
+			}
+		}
 	}
 	return !(b.stopped || b.audioDone())
 }
 
 func (b *audioBuffer) audioDone() bool {
-	return b.allAudioLoaded && b.externalPlayhead == len(b.audio)
+	return (b.allAudioLoaded || (b.usingWithLegacyTTS && b.legacyAllAudioLoaded)) &&
+		b.externalPlayhead == len(b.audio)
 }
 
 func (b *audioBuffer) Mark(transcript string) {
@@ -142,7 +153,12 @@ func (b *audioBuffer) ConfirmMark(id string) {
 			b.marks[i].confirmed = true
 			b.externalPlayhead = mark.position
 			b.StartedPlaying()
-			if b.allAudioLoaded && b.externalPlayhead == len(b.audio) {
+			if (b.allAudioLoaded ||
+				// HACK: Following condition is purely for using old tts interface
+				// TODO: Remove this once we can remove the old TTS version
+				(b.usingWithLegacyTTS && i == len(b.marks)-1 && b.marks[i].transcript == "")) &&
+				b.externalPlayhead == len(b.audio) {
+				b.legacyAllAudioLoaded = true
 				b.signalUpdate()
 			}
 			break

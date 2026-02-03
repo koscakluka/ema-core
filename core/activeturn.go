@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/texttospeech"
@@ -317,6 +318,7 @@ func (t *activeTurnTTS) init(ctx context.Context, turn *activeTurn) error {
 			}
 			t.ttsClient = client
 			t.connected = true
+			turn.audioBuffer.usingWithLegacyTTS = true
 		}
 	}
 	return nil
