@@ -55,7 +55,7 @@ func (o *Orchestrator) initSST() {
 func (o *Orchestrator) processUserTurn(prompt string) {
 	var interruptionID *int64
 	ctx := context.Background()
-	if activeTurn := o.turns.activeTurn; activeTurn != nil {
+	if activeTurn := o.conversation.activeTurn; activeTurn != nil {
 		interruptionID = utils.Ptr(time.Now().UnixNano())
 		if err := activeTurn.AddInterruption(llms.InterruptionV0{
 			ID:     *interruptionID,
@@ -73,7 +73,7 @@ func (o *Orchestrator) processUserTurn(prompt string) {
 			if interruption, err := o.interruptionHandlerV2.HandleV2(ctx, *interruptionID, o, o.tools); err != nil {
 				log.Printf("Failed to handle interruption: %v", err)
 			} else {
-				o.turns.updateInterruption(*interruptionID, func(update *llms.InterruptionV0) {
+				o.conversation.updateInterruption(*interruptionID, func(update *llms.InterruptionV0) {
 					update.Type = interruption.Type
 					update.Resolved = interruption.Resolved
 				})
@@ -83,35 +83,35 @@ func (o *Orchestrator) processUserTurn(prompt string) {
 			if interruption, err := o.interruptionHandlerV1.HandleV1(*interruptionID, o, o.tools); err != nil {
 				log.Printf("Failed to handle interruption: %v", err)
 			} else {
-				o.turns.updateInterruption(*interruptionID, func(update *llms.InterruptionV0) {
+				o.conversation.updateInterruption(*interruptionID, func(update *llms.InterruptionV0) {
 					update.Type = interruption.Type
 					update.Resolved = interruption.Resolved
 				})
 				return
 			}
 		} else if o.interruptionHandlerV0 != nil {
-			if err := o.interruptionHandlerV0.HandleV0(prompt, o.turns.turns, o.tools, o); err != nil {
+			if err := o.interruptionHandlerV0.HandleV0(prompt, llms.ToTurnsV0FromV1(o.conversation.turns), o.tools, o); err != nil {
 				log.Printf("Failed to handle interruption: %v", err)
 			} else {
-				o.turns.updateInterruption(*interruptionID, func(interruption *llms.InterruptionV0) {
+				o.conversation.updateInterruption(*interruptionID, func(interruption *llms.InterruptionV0) {
 					interruption.Resolved = true
 				})
 				return
 			}
 		} else if o.interruptionClassifier != nil {
-			interruption, err := o.interruptionClassifier.Classify(prompt, llms.ToMessages(o.turns.turns), ClassifyWithTools(o.tools), ClassifyWithContext(ctx))
+			interruption, err := o.interruptionClassifier.Classify(prompt, llms.ToMessages(llms.ToTurnsV0FromV1(o.conversation.turns)), ClassifyWithTools(o.tools), ClassifyWithContext(ctx))
 			if err != nil {
 				// TODO: Retry?
 				log.Printf("Failed to classify interruption: %v", err)
 			} else {
-				o.turns.updateInterruption(*interruptionID, func(i *llms.InterruptionV0) { i.Type = string(interruption) })
+				o.conversation.updateInterruption(*interruptionID, func(i *llms.InterruptionV0) { i.Type = string(interruption) })
 				passthrough, err = o.respondToInterruption(prompt, interruption)
 				if err != nil {
 					log.Printf("Failed to respond to interruption: %v", err)
 				}
 			}
 		}
-		o.turns.updateInterruption(*interruptionID, func(interruption *llms.InterruptionV0) {
+		o.conversation.updateInterruption(*interruptionID, func(interruption *llms.InterruptionV0) {
 			interruption.Resolved = true
 		})
 	}

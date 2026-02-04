@@ -1,5 +1,7 @@
 package llms
 
+import "fmt"
+
 // Message is a single message in a conversation, but actually it represents a
 // response from an LLM. It is an alias for Response for backwards compatibility.
 //
@@ -24,6 +26,8 @@ type Response struct {
 }
 
 // Turn is a single turn taken in the conversation.
+//
+// Deprecated: (since v0.0.15) use TurnV1 instead
 type Turn struct {
 	Role TurnRole
 
@@ -42,6 +46,81 @@ type Turn struct {
 	// Deprecated: The response is now a ToolCall property, this is only here
 	// for backwards compatibility
 	ToolCallID string
+}
+
+type TurnV1 struct {
+	// Trigger is what initiated the turn, e.g. a user message, notification,
+	// completed tool call, etc.
+	Trigger TriggerV0
+
+	// Responses is a list of responses that the assistant has generated for
+	// the turn. The assistant may generate multiple responses for a single
+	// turn e.g. if the tool call is slow, or there is an error, there might,
+	// be an intermediate response.
+	Responses []TurnResponseV0
+	// ToolCalls is a list of tool calls that were executed during the turn.
+	ToolCalls []ToolCall
+	// Interruptions is a list of interruptions that were triggered during the
+	// turn.
+	Interruptions []InterruptionV0
+
+	// Finalized is true if the assistant has finalized the turn, i.e. the
+	// assistant has generated a response and the assistant has finished
+	// generating responses for the turn.
+	IsFinalised bool
+}
+
+func (t *TurnV1) IsCancelled() bool {
+	if !t.IsFinalised {
+		return false
+	}
+
+	for _, response := range t.Responses {
+		if !response.IsCompleted() {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *TurnV1) HasAssistantPart() bool {
+	return len(t.Responses) > 0 || len(t.ToolCalls) > 0 || len(t.Interruptions) > 0
+}
+
+type TriggerV0 interface {
+	fmt.Stringer
+}
+
+type UserPromptTrigger struct {
+	Prompt string
+}
+
+func (t UserPromptTrigger) String() string {
+	return t.Prompt
+}
+
+type TurnResponseV0 struct {
+	Message        string
+	TypedMessage   string
+	SpokenResponse string
+
+	IsMessageFullyGenerated bool
+	IsTyped                 bool
+	IsSpoken                bool
+}
+
+func (g *TurnResponseV0) IsCompleted() bool {
+	return g.IsMessageFullyGenerated &&
+		(!g.IsTyped || len(g.Message) == len(g.TypedMessage)) &&
+		(!g.IsSpoken || len(g.Message) == len(g.SpokenResponse))
+}
+
+func (g *TurnResponseV0) IsFullyTyped() bool {
+	return g.IsMessageFullyGenerated && (!g.IsTyped || len(g.Message) == len(g.TypedMessage))
+}
+
+func (g *TurnResponseV0) IsFullySpoken() bool {
+	return g.IsMessageFullyGenerated && (!g.IsSpoken || len(g.Message) == len(g.SpokenResponse))
 }
 
 type InterruptionV0 struct {

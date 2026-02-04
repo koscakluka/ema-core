@@ -25,15 +25,12 @@ func Prompt(
 		opt.ApplyToGeneral(&options)
 	}
 
-	messages := toOpenAIMessages(
-		options.BaseOptions.Instructions,
-		append(options.BaseOptions.Turns,
-			llms.Turn{
-				Role:    llms.TurnRoleUser,
-				Content: prompt,
-			},
-		),
-	)
+	messages := toOpenAIMessages(options.BaseOptions.Instructions, options.BaseOptions.TurnsV1)
+	messages = append(messages, openAIMessage{
+		Type:    messageTypeMessage,
+		Role:    messageRoleUser,
+		Content: prompt,
+	})
 
 	var toolChoice *string
 	var tools []openAITool

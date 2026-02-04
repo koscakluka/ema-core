@@ -16,7 +16,7 @@ var interruptionClassifierSystemPrompt string
 var interruptionClassifierStructuredSystemPrompt string
 
 type Classification struct {
-	Type string `json:"type" jsonschema:"title=Type,description=The type of interruption" enum:"continuation,clarification,cancellation,ignorable,repetition,noise,action,new prompt"`
+	Type string `json:"type" jsonschema:"title=Type,description=The type ofinterruption,enum=continuation,enum=clarification,enum=cancellation,enum=ignorable,enum=repetition,enum=noise,enum=action,enum=new prompt "`
 }
 
 func classify(ctx context.Context, interruption llms.InterruptionV0, llm LLM, opts ...ClassifyOption) (*llms.InterruptionV0, error) {
@@ -36,7 +36,7 @@ func classify(ctx context.Context, interruption llms.InterruptionV0, llm LLM, op
 		if err := llm.(LLMWithStructuredPrompt).PromptWithStructure(ctx, interruption.Source,
 			&resp,
 			llms.WithSystemPrompt(systemPrompt),
-			llms.WithTurns(options.History...),
+			llms.WithTurnsV1(options.History...),
 		); err != nil {
 			// TODO: Retry?
 			return &interruption, err
@@ -57,7 +57,7 @@ func classify(ctx context.Context, interruption llms.InterruptionV0, llm LLM, op
 
 		response, _ := llm.(LLMWithGeneralPrompt).Prompt(ctx, interruption.Source,
 			llms.WithSystemPrompt(systemPrompt),
-			llms.WithTurns(options.History...),
+			llms.WithTurnsV1(options.History...),
 		)
 
 		if len(response.Content) == 0 {
@@ -109,7 +109,7 @@ func toInterruptionType(classification string) (interruptionType, error) {
 type ClassifyOption func(*ClassifyOptions)
 
 type ClassifyOptions struct {
-	History []llms.Turn
+	History []llms.TurnV1
 	Tools   []llms.Tool
 }
 
@@ -119,7 +119,7 @@ func WithTools(tools []llms.Tool) ClassifyOption {
 	}
 }
 
-func WithHistory(history []llms.Turn) ClassifyOption {
+func WithHistory(history []llms.TurnV1) ClassifyOption {
 	return func(o *ClassifyOptions) {
 		o.History = history
 	}

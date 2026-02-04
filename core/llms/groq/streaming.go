@@ -41,7 +41,7 @@ func PromptWithStream(
 		opt.ApplyToStreaming(&options)
 	}
 
-	messages := toMessages(options.BaseOptions.Instructions, options.BaseOptions.Turns)
+	messages := toMessages(options.BaseOptions.Instructions, options.BaseOptions.TurnsV1)
 	if prompt != nil {
 		messages = append(messages, message{
 			Role:    messageRoleUser,

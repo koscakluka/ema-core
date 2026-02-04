@@ -15,25 +15,27 @@ import (
 )
 
 type activeTurn struct {
-	llms.Turn
+	llms.TurnV1
 
-	ctx         context.Context
-	textBuffer  textBuffer
-	audioBuffer audioBuffer
-	tts         activeTurnTTS         // NOTE: tmp until we can remove the old TTS version
-	audioOut    activeTurnAudioOutput // NOTE: tmp until we can remove the old audioOutput version
+	ctx           context.Context
+	textBuffer    textBuffer
+	audioBuffer   audioBuffer
+	tts           activeTurnTTS         // NOTE: tmp until we can remove the old TTS version
+	audioOut      activeTurnAudioOutput // NOTE: tmp until we can remove the old audioOutput version
+	finalResponse *llms.TurnResponseV0
 
 	components activeTurnComponents
 	callbacks  activeTurnCallbacks
 	config     activeTurnConfig
 
-	err error
+	cancelled bool
+	err       error
 }
 
 type activeTurnComponents struct {
 	TextToSpeechClient textToSpeech
 	AudioOutput        audioOutput
-	ResponseGenerator  func(context.Context, *textBuffer) (*llms.Turn, error) // TODO: Fix the signature to include prompt and "history"
+	ResponseGenerator  func(context.Context, *textBuffer) (*llms.Response, error) // TODO: Fix the signature to include prompt and "history"
 }
 
 type activeTurnCallbacks struct {
@@ -76,9 +78,9 @@ type activeTurnConfig struct {
 	IsSpeaking bool
 }
 
-func newActiveTurn(ctx context.Context, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) *activeTurn {
+func newActiveTurn(ctx context.Context, trigger llms.TriggerV0, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) *activeTurn {
 	activeTurn := &activeTurn{
-		Turn: llms.Turn{Role: llms.TurnRoleAssistant},
+		TurnV1: llms.TurnV1{Trigger: trigger},
 
 		ctx:         ctx,
 		textBuffer:  *newTextBuffer(),
@@ -87,6 +89,8 @@ func newActiveTurn(ctx context.Context, components activeTurnComponents, callbac
 		components:  components,
 		callbacks:   *(new(activeTurnCallbacks).defaults().with(callbacks)),
 		config:      config,
+
+		finalResponse: &llms.TurnResponseV0{},
 	}
 
 	if activeTurn.components.AudioOutput != nil {
@@ -98,9 +102,9 @@ func newActiveTurn(ctx context.Context, components activeTurnComponents, callbac
 }
 
 func (t *activeTurn) AddInterruption(interruption llms.InterruptionV0) error {
-	if t.Cancelled {
+	if t.IsCancelled() {
 		return fmt.Errorf("turn cancelled")
-	} else if t.Stage == llms.TurnStageFinalized {
+	} else if t.IsFinalised {
 		return fmt.Errorf("turn already finalized")
 	}
 
@@ -122,21 +126,20 @@ func (t *activeTurn) Unpause() {
 }
 
 func (t *activeTurn) Finalise() {
-	if t.Stage == llms.TurnStageFinalized {
+	if t.IsFinalised {
 		return
 	}
 
-	t.Turn.Stage = llms.TurnStageFinalized
+	if t.finalResponse != nil {
+		t.Responses = append(t.Responses, *t.finalResponse)
+	}
+	t.IsFinalised = true
 	t.tts.Close(t.ctx)
 	t.callbacks.OnFinalise(t)
 }
 
 func (t *activeTurn) IsMutable() bool {
-	return !t.IsFinalized()
-}
-
-func (t *activeTurn) IsFinalized() bool {
-	return t.Stage == llms.TurnStageFinalized || t.Cancelled
+	return !t.IsFinalised
 }
 
 func (t *activeTurn) generateResponse(ctx context.Context) error {
@@ -152,6 +155,9 @@ func (t *activeTurn) generateResponse(ctx context.Context) error {
 		return err
 	}
 	if response != nil {
+		t.finalResponse.IsMessageFullyGenerated = true
+		t.finalResponse.Message = response.Content
+		t.ToolCalls = response.ToolCalls
 		var toolCalls []string
 		for _, toolCall := range response.ToolCalls {
 			toolCalls = append(toolCalls, toolCall.Name)
@@ -160,11 +166,6 @@ func (t *activeTurn) generateResponse(ctx context.Context) error {
 	}
 
 	t.textBuffer.TextComplete()
-	if t.IsMutable() {
-		t.Content = response.Content
-		t.ToolCalls = response.ToolCalls
-	}
-
 	return nil
 }
 
@@ -190,9 +191,10 @@ func (t *activeTurn) processResponseText(ctx context.Context) error {
 
 textLoop:
 	for chunk := range t.textBuffer.Chunks {
-		if t.Cancelled {
+		if t.IsCancelled() {
 			break textLoop
 		}
+		t.finalResponse.TypedMessage += chunk
 		t.callbacks.OnResponseText(chunk)
 
 		if err := t.tts.SendText(chunk); err != nil {
@@ -239,7 +241,7 @@ bufferReadingLoop:
 			audio := audioOrMark.Audio
 			t.callbacks.OnResponseSpeech(audio)
 
-			if !t.config.IsSpeaking || t.Cancelled {
+			if !t.config.IsSpeaking || t.IsCancelled() {
 				t.audioOut.Clear()
 				break bufferReadingLoop
 			}
@@ -251,6 +253,9 @@ bufferReadingLoop:
 			span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
 			t.audioOut.Mark(mark, func(mark string) {
 				span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
+				if transcript := t.audioBuffer.GetMarkText(mark); transcript != nil {
+					t.finalResponse.SpokenResponse += *transcript
+				}
 				t.audioBuffer.ConfirmMark(mark)
 			})
 		}

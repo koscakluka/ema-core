@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	emaContext "github.com/koscakluka/ema-core/core/context"
 	"github.com/koscakluka/ema-core/core/interruptions"
@@ -24,7 +25,7 @@ func NewInterruptionHandlerWithStructuredPrompt(classificationLLM LLMWithStructu
 func (h *InterruptionHandlerWithStructuredPrompt) HandleV0(prompt string, history []llms.Turn, tools []llms.Tool, orchestrator interruptions.OrchestratorV0) error {
 	ctx := context.Background()
 	interruption := &llms.InterruptionV0{ID: 0, Source: prompt}
-	interruption, err := classify(ctx, *interruption, h.llm, WithHistory(history), WithTools(tools))
+	interruption, err := classify(ctx, *interruption, h.llm, WithHistory(llms.ToTurnsV1FromV0(history)), WithTools(tools))
 	if err != nil {
 		return err
 	}
@@ -100,7 +101,7 @@ type LLMWithGeneralPrompt interface {
 func (h *InterruptionHandlerWithGeneralPrompt) HandleV0(prompt string, history []llms.Turn, tools []llms.Tool, orchestrator interruptions.OrchestratorV0) error {
 	ctx := context.Background()
 	interruption := &llms.InterruptionV0{ID: 0, Source: prompt}
-	interruption, err := classify(ctx, *interruption, h.llm, WithHistory(history), WithTools(tools))
+	interruption, err := classify(ctx, *interruption, h.llm, WithHistory(llms.ToTurnsV1FromV0(history)), WithTools(tools))
 	if err != nil {
 		return err
 	}
@@ -165,10 +166,12 @@ func findInterruption(id int64, turns emaContext.TurnsV0) *llms.InterruptionV0 {
 	return nil
 }
 
-func getHistory(turns emaContext.TurnsV0) []llms.Turn {
+func getHistory(turns emaContext.TurnsV0) []llms.TurnV1 {
 	var history []llms.Turn
-	for turn := range turns.RValues {
+	for turn := range turns.Values {
 		history = append(history, turn)
 	}
-	return history
+	historyV1 := llms.ToTurnsV1FromV0(history)
+	slices.Reverse(historyV1)
+	return historyV1
 }

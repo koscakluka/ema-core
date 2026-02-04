@@ -31,7 +31,7 @@ type toolCallFunction struct {
 	Arguments string `json:"arguments"`
 }
 
-func toMessages(instructions string, turns []llms.Turn) []message {
+func toMessages(instructions string, turns []llms.TurnV1) []message {
 	messages := []message{}
 	if instructions != "" {
 		messages = append(messages, message{
@@ -40,44 +40,51 @@ func toMessages(instructions string, turns []llms.Turn) []message {
 		})
 	}
 	for _, turn := range turns {
-		switch turn.Role {
-		case llms.TurnRoleUser:
+		if turn.Trigger.String() != "" {
 			messages = append(messages, message{
 				Role:    messageRoleUser,
-				Content: turn.Content,
+				Content: turn.Trigger.String(),
 			})
+		}
 
-		case llms.TurnRoleAssistant:
-			if len(turn.ToolCalls) > 0 {
-				msg := message{Role: messageRoleAssistant}
-				responseMsgs := []message{}
-				for _, tCall := range turn.ToolCalls {
-					msg.ToolCalls = append(msg.ToolCalls, toolCall{
-						ID:   tCall.ID,
-						Type: "function",
-						Function: toolCallFunction{
-							Name:      tCall.Name,
-							Arguments: tCall.Arguments,
-						},
-					})
-					if tCall.Response != "" {
-						responseMsgs = append(responseMsgs, message{
-							Role:       messageRoleTool,
-							Content:    tCall.Response,
-							ToolCallID: tCall.ID,
-						})
-					}
-				}
-
-				messages = append(messages, msg)
-				messages = append(messages, responseMsgs...)
-			}
-			if len(turn.Content) > 0 {
-				messages = append(messages, message{
-					Role:    messageRoleAssistant,
-					Content: turn.Content,
+		if len(turn.ToolCalls) > 0 {
+			msg := message{Role: messageRoleAssistant}
+			responseMsgs := []message{}
+			for _, tCall := range turn.ToolCalls {
+				msg.ToolCalls = append(msg.ToolCalls, toolCall{
+					ID:   tCall.ID,
+					Type: "function",
+					Function: toolCallFunction{
+						Name:      tCall.Name,
+						Arguments: tCall.Arguments,
+					},
 				})
+				if tCall.Response != "" {
+					responseMsgs = append(responseMsgs, message{
+						Role:       messageRoleTool,
+						Content:    tCall.Response,
+						ToolCallID: tCall.ID,
+					})
+				}
 			}
+
+			messages = append(messages, msg)
+			messages = append(messages, responseMsgs...)
+		}
+		for _, response := range turn.Responses {
+			if !response.IsCompleted() {
+				continue
+			}
+			msg := message{Role: messageRoleAssistant}
+			if response.IsTyped {
+				msg.Content = response.TypedMessage
+			} else if response.IsSpoken {
+				msg.Content = response.SpokenResponse
+			} else {
+				msg.Content = response.Message
+			}
+
+			messages = append(messages, msg)
 		}
 	}
 	return messages

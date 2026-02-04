@@ -2,6 +2,7 @@ package llms
 
 import (
 	"slices"
+	"strings"
 )
 
 // PromptOptions is a struct that contains all the options for a prompt. It is
@@ -12,6 +13,7 @@ import (
 type PromptOptions struct {
 	Instructions    string
 	Turns           []Turn
+	TurnsV1         []TurnV1
 	Messages        []Message
 	Stream          func(string)
 	Tools           []Tool
@@ -22,6 +24,7 @@ type BaseOptions struct {
 	Instructions string
 	Messages     []Message
 	Turns        []Turn
+	TurnsV1      []TurnV1
 }
 
 type GeneralPromptOptions struct {
@@ -64,7 +67,9 @@ func (f PromptOption) ApplyToGeneral(o *GeneralPromptOptions) {
 	o.PromptOptions.Tools = o.Tools
 	o.PromptOptions.ForcedToolsCall = o.ForcedToolsCall
 	o.PromptOptions.Instructions = o.BaseOptions.Instructions
+	o.PromptOptions.TurnsV1 = o.BaseOptions.TurnsV1
 	f(&o.PromptOptions)
+	o.BaseOptions.TurnsV1 = o.PromptOptions.TurnsV1
 	o.BaseOptions.Instructions = o.PromptOptions.Instructions
 	o.BaseOptions.Messages = o.PromptOptions.Messages
 	o.BaseOptions.Turns = o.PromptOptions.Turns
@@ -78,7 +83,9 @@ func (f PromptOption) ApplyToStreaming(o *StreamingPromptOptions) {
 	o.PromptOptions.Tools = o.GeneralPromptOptions.Tools
 	o.PromptOptions.ForcedToolsCall = o.GeneralPromptOptions.ForcedToolsCall
 	o.PromptOptions.Instructions = o.BaseOptions.Instructions
+	o.PromptOptions.TurnsV1 = o.BaseOptions.TurnsV1
 	f(&o.PromptOptions)
+	o.BaseOptions.TurnsV1 = o.PromptOptions.TurnsV1
 	o.BaseOptions.Instructions = o.PromptOptions.Instructions
 	o.BaseOptions.Messages = o.PromptOptions.Messages
 	o.BaseOptions.Turns = o.PromptOptions.Turns
@@ -89,9 +96,11 @@ func (f PromptOption) ApplyToStreaming(o *StreamingPromptOptions) {
 func (f PromptOption) ApplyToStructured(o *StructuredPromptOptions) {
 	o.PromptOptions.Messages = o.BaseOptions.Messages
 	o.PromptOptions.Turns = o.BaseOptions.Turns
+	o.PromptOptions.TurnsV1 = o.BaseOptions.TurnsV1
 	o.PromptOptions.Instructions = o.BaseOptions.Instructions
 	f(&o.PromptOptions)
 	o.BaseOptions.Instructions = o.PromptOptions.Instructions
+	o.BaseOptions.TurnsV1 = o.PromptOptions.TurnsV1
 	o.BaseOptions.Messages = o.PromptOptions.Messages
 	o.BaseOptions.Turns = o.PromptOptions.Turns
 }
@@ -135,6 +144,7 @@ func WithMessages(messages ...Message) PromptOption {
 	return func(opts *PromptOptions) {
 		opts.Messages = append(opts.Messages, messages...)
 		opts.Turns = append(opts.Turns, ToTurns(messages)...)
+		opts.TurnsV1 = append(opts.TurnsV1, ToTurnsV1FromV0(ToTurns(messages))...)
 	}
 }
 
@@ -144,6 +154,15 @@ func WithTurns(turns ...Turn) PromptOption {
 	return func(opts *PromptOptions) {
 		opts.Turns = append(opts.Turns, turns...)
 		opts.Messages = append(opts.Messages, ToMessages(turns)...)
+		opts.TurnsV1 = append(opts.TurnsV1, ToTurnsV1FromV0(turns)...)
+	}
+}
+
+func WithTurnsV1(turns ...TurnV1) PromptOption {
+	return func(opts *PromptOptions) {
+		opts.TurnsV1 = append(opts.TurnsV1, turns...)
+		opts.Turns = append(opts.Turns, ToTurnsV0FromV1(turns)...)
+		opts.Messages = append(opts.Messages, ToMessages(opts.Turns)...)
 	}
 }
 
@@ -291,4 +310,67 @@ func ToTurns(messages []Message) []Turn {
 		}
 	}
 	return turns
+}
+
+func ToTurnsV1FromV0(turns []Turn) []TurnV1 {
+	turnsV1 := []TurnV1{}
+	var turnV1 *TurnV1
+	for _, turn := range turns {
+		switch turn.Role {
+		case TurnRoleUser:
+			if turnV1 != nil {
+				turnsV1 = append(turnsV1, *turnV1)
+			}
+			turnV1 = &TurnV1{
+				Trigger: UserPromptTrigger{Prompt: turn.Content},
+			}
+		case TurnRoleAssistant:
+			turnV1.Interruptions = append(turnV1.Interruptions, turn.Interruptions...)
+			turnV1.ToolCalls = append(turnV1.ToolCalls, turn.ToolCalls...)
+			turnV1.Responses = append(turnV1.Responses, TurnResponseV0{
+				Message:                 turn.Content,
+				TypedMessage:            turn.Content,
+				SpokenResponse:          turn.Content,
+				IsMessageFullyGenerated: !turn.Cancelled,
+				IsTyped:                 false,
+				IsSpoken:                false,
+			})
+			turnV1.IsFinalised = turn.Stage == TurnStageFinalized
+		}
+	}
+
+	if turnV1 != nil {
+		turnsV1 = append(turnsV1, *turnV1)
+	}
+	return turnsV1
+}
+
+func ToTurnsV0FromV1(turns []TurnV1) []Turn {
+	turnsV0 := []Turn{}
+	for _, turn := range turns {
+		turnsV0 = append(turnsV0, Turn{
+			Role:    TurnRoleUser,
+			Content: turn.Trigger.String(),
+		})
+		var message strings.Builder
+		for _, response := range turn.Responses {
+			if response.IsTyped {
+				message.WriteString(response.TypedMessage)
+			} else if response.IsSpoken {
+				message.WriteString(response.SpokenResponse)
+			} else {
+				message.WriteString(response.Message)
+			}
+		}
+		if turn.HasAssistantPart() {
+			turnsV0 = append(turnsV0, Turn{
+				Role:          TurnRoleAssistant,
+				Content:       message.String(),
+				ToolCalls:     turn.ToolCalls,
+				Interruptions: turn.Interruptions,
+			})
+		}
+
+	}
+	return turnsV0
 }

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 
+	emaContext "github.com/koscakluka/ema-core/core/context"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/internal/utils"
 )
@@ -51,7 +53,7 @@ type InterruptionClassifier interface {
 func WithAudioOutput(client AudioOutputV0) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.audioOutput = client
-		if activeTurn := o.turns.activeTurn; activeTurn != nil {
+		if activeTurn := o.conversation.activeTurn; activeTurn != nil {
 			activeTurn.audioBuffer.sampleRate = client.EncodingInfo().SampleRate
 		}
 	}
@@ -68,7 +70,14 @@ func (o *Orchestrator) Cancel() {
 //
 // Deprecated: (since v0.0.13) use Turns instead
 func (o *Orchestrator) Messages() []llms.Message {
-	return llms.ToMessages(o.turns.turns)
+	return llms.ToMessages(llms.ToTurnsV0FromV1(o.conversation.turns))
+}
+
+// Turns return llm Turns
+//
+// Deprecated: (since v0.0.15) use Conversation instead
+func (o *Orchestrator) Turns() emaContext.TurnsV0 {
+	return &turns{conversation: &o.conversation}
 }
 
 // respondToInterruption
@@ -122,7 +131,7 @@ func (o *Orchestrator) respondToInterruption(prompt string, t interruptionType) 
 		case LLMWithPrompt:
 			if _, err := o.llm.(LLMWithPrompt).Prompt(context.TODO(), prompt,
 				llms.WithForcedTools(o.tools...),
-				llms.WithTurns(o.turns.turns...),
+				llms.WithTurnsV1(o.conversation.turns...),
 			); err != nil {
 				// TODO: Retry?
 				return nil, fmt.Errorf("failed to call tool LLM: %w", err)
@@ -130,7 +139,7 @@ func (o *Orchestrator) respondToInterruption(prompt string, t interruptionType) 
 		case LLMWithGeneralPrompt:
 			resp, err := o.llm.(LLMWithGeneralPrompt).Prompt(context.TODO(), prompt,
 				llms.WithForcedTools(o.tools...),
-				llms.WithTurns(o.turns.turns...),
+				llms.WithTurnsV1(o.conversation.turns...),
 			)
 			if err != nil {
 				// TODO: Retry?
@@ -410,4 +419,54 @@ const (
 // Deprecated: (since v0.0.13) use InterruptionHandlers instead
 type InterruptionLLM interface {
 	PromptWithStructure(ctx context.Context, prompt string, outputSchema any, opts ...llms.StructuredPromptOption) error
+}
+
+// turns is a deprecated type that is used to provide backwards compatibility
+// for the old TurnsV0 interface
+//
+// Deprecated: (since v0.0.15) use Conversation instead
+type turns struct {
+	conversation *Conversation
+}
+
+// Push is a deprecated method that is used to provide backwards compatibility
+// for the old TurnsV0 interface. There is no new equivalent method at the
+// moment.
+//
+// Deprecated: (since v0.0.15) use Conversation instead
+func (t *turns) Push(turn llms.Turn) {
+	t.conversation.turns = append(t.conversation.turns, llms.ToTurnsV1FromV0([]llms.Turn{turn})...)
+}
+
+func (t *turns) Pop() *llms.Turn {
+	return t.conversation.popOld()
+}
+
+func (t *turns) Clear() {
+	t.conversation.Clear()
+}
+
+func (t *turns) Values(yield func(llms.Turn) bool) {
+	for turn := range t.conversation.Values {
+		turns := llms.ToTurnsV0FromV1([]llms.TurnV1{turn})
+		for _, turn := range turns {
+			if !yield(turn) {
+				return
+			}
+		}
+	}
+}
+
+func (t *turns) RValues(yield func(llms.Turn) bool) {
+	turnsV1 := []llms.TurnV1{}
+	for turn := range t.conversation.Values {
+		turnsV1 = append(turnsV1, turn)
+	}
+	turns := llms.ToTurnsV0FromV1(turnsV1)
+	slices.Reverse(turns)
+	for _, turn := range turns {
+		if !yield(turn) {
+			return
+		}
+	}
 }

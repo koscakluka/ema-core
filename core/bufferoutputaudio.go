@@ -60,7 +60,10 @@ func (b *audioBuffer) Audio(yield func(audio audioOrMark) bool) {
 			if ok := b.waitIfPaused(); !ok {
 				return
 			}
-			firstStart.Do(b.StartedPlaying)
+			firstStart.Do(func() {
+				time.Sleep(50 * time.Millisecond)
+				b.StartedPlaying()
+			})
 			if !yield(audioOrMark{Type: "audio", Audio: b.consumeNextChunk()}) {
 				return
 			}
@@ -136,6 +139,15 @@ func (b *audioBuffer) Mark(transcript string) {
 		position:   len(b.audio),
 	})
 	b.signalUpdate()
+}
+
+func (b *audioBuffer) GetMarkText(id string) *string {
+	for _, mark := range b.marks {
+		if mark.ID == id {
+			return &mark.transcript
+		}
+	}
+	return nil
 }
 
 func (b *audioBuffer) ConfirmMark(id string) {

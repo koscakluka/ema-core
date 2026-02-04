@@ -44,7 +44,7 @@ func Prompt(
 		opt(&options)
 	}
 
-	messages := toMessages(options.Instructions, options.Turns)
+	messages := toMessages(options.Instructions, options.TurnsV1)
 	messages = append(messages, message{
 		Role:    messageRoleUser,
 		Content: prompt,

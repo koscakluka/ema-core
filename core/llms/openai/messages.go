@@ -33,35 +33,26 @@ const (
 	messageTypeFunctionCallOutput messageType = "function_call_output"
 )
 
-func toOpenAIMessages(instructions string, messages []llms.Turn) []openAIMessage {
-	openAIMessages := []openAIMessage{}
+func toOpenAIMessages(instructions string, turns []llms.TurnV1) []openAIMessage {
+	messages := []openAIMessage{}
 	if instructions != "" {
-		openAIMessages = append(openAIMessages, openAIMessage{
+		messages = append(messages, openAIMessage{
 			Role:    messageRoleDeveloper,
 			Type:    messageTypeMessage,
 			Content: instructions,
 		})
 	}
-	for _, msg := range messages {
-		openAIMessages = append(openAIMessages, toOpenAIMessage(msg)...)
-	}
-	return openAIMessages
-}
 
-func toOpenAIMessage(turn llms.Turn) []openAIMessage {
-	switch turn.Role {
-	case llms.TurnRoleUser:
-		return []openAIMessage{{
+	for _, turn := range turns {
+		messages = append(messages, openAIMessage{
 			Type:    messageTypeMessage,
 			Role:    messageRoleUser,
-			Content: turn.Content,
-		}}
+			Content: turn.Trigger.String(),
+		})
 
-	case llms.TurnRoleAssistant:
 		if len(turn.ToolCalls) > 0 {
-			oAIMsgs := []openAIMessage{}
 			for _, toolCall := range turn.ToolCalls {
-				oAIMsgs = append(oAIMsgs, openAIMessage{
+				messages = append(messages, openAIMessage{
 					Type:              messageTypeFunctionCall,
 					ToolCallID:        toolCall.ID,
 					ToolCallName:      toolCall.Name,
@@ -69,23 +60,33 @@ func toOpenAIMessage(turn llms.Turn) []openAIMessage {
 					ToolCallStatus:    "completed",
 				})
 				if toolCall.Response != "" {
-					oAIMsgs = append(oAIMsgs, openAIMessage{
+					messages = append(messages, openAIMessage{
 						Type:           messageTypeFunctionCallOutput,
 						ToolCallID:     toolCall.ID,
 						ToolCallOutput: toolCall.Response,
 					})
 				}
 			}
-			return oAIMsgs
+			return messages
 		}
-		if len(turn.Content) > 0 {
-			return []openAIMessage{{
-				Type:    messageTypeMessage,
-				Role:    messageRoleAssistant,
-				Content: turn.Content,
-			}}
+		for _, response := range turn.Responses {
+			if !response.IsCompleted() {
+				continue
+			}
+			msg := openAIMessage{
+				Type: messageTypeMessage,
+				Role: messageRoleAssistant,
+			}
+			if response.IsTyped {
+				msg.Content = response.TypedMessage
+			} else if response.IsSpoken {
+				msg.Content = response.SpokenResponse
+			} else {
+				msg.Content = response.Message
+			}
+
+			messages = append(messages, msg)
 		}
 	}
-
-	return []openAIMessage{}
+	return messages
 }

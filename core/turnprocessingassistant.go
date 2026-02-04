@@ -14,9 +14,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type UserPromptTrigger struct {
+	Prompt string
+}
+
+func (t UserPromptTrigger) String() string {
+	return t.Prompt
+}
+
 func (o *Orchestrator) startAssistantLoop() {
 	for promptQueueItem := range o.transcripts {
-		if o.turns.activeTurn != nil {
+		if o.conversation.activeTurn != nil {
 			o.promptEnded.Wait()
 		}
 		o.promptEnded.Add(1)
@@ -26,15 +34,12 @@ func (o *Orchestrator) startAssistantLoop() {
 		span.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
 		transcript := promptQueueItem.content
 
-		messages := o.turns
-		o.turns.Push(llms.Turn{
-			Role:    llms.TurnRoleUser,
-			Content: transcript,
-		})
+		messages := o.conversation
+		trigger := UserPromptTrigger{Prompt: transcript}
 
 		components := activeTurnComponents{
 			AudioOutput: o.audioOutput,
-			ResponseGenerator: func(ctx context.Context, buffer *textBuffer) (*llms.Turn, error) {
+			ResponseGenerator: func(ctx context.Context, buffer *textBuffer) (*llms.Response, error) {
 				switch o.llm.(type) {
 				case LLMWithStream:
 					return o.processStreaming(ctx, transcript, messages.turns, buffer)
@@ -81,14 +86,14 @@ func (o *Orchestrator) startAssistantLoop() {
 				span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.transcripts)))
 				span.End()
 				// TODO: Check if turns IDs match
-				if activeTurn := o.turns.activeTurn; activeTurn != nil {
-					o.turns.turns = append(o.turns.turns, activeTurn.Turn)
-					o.turns.activeTurn = nil
+				if activeTurn := o.conversation.activeTurn; activeTurn != nil {
+					o.conversation.turns = append(o.conversation.turns, activeTurn.TurnV1)
+					o.conversation.activeTurn = nil
 					o.promptEnded.Done()
 				}
 			},
 		}
-		if err := o.turns.processActiveTurn(ctx, components, callbacks,
+		if err := o.conversation.processActiveTurn(ctx, trigger, components, callbacks,
 			activeTurnConfig{IsSpeaking: o.IsSpeaking},
 		); err != nil {
 			err := fmt.Errorf("failed to process active turn: %v", err)
@@ -101,52 +106,41 @@ func (o *Orchestrator) startAssistantLoop() {
 	}
 }
 
-func (o *Orchestrator) processPromptOld(ctx context.Context, prompt string, messages []llms.Turn, buffer *textBuffer) (*llms.Turn, error) {
+func (o *Orchestrator) processPromptOld(ctx context.Context, prompt string, conversations []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
 	if o.llm.(LLMWithPrompt) == nil {
 		return nil, fmt.Errorf("LLM does not support prompting")
 	}
 
 	response, _ := o.llm.(LLMWithPrompt).Prompt(ctx, prompt,
-		llms.WithTurns(messages...),
+		llms.WithTurnsV1(conversations...),
 		llms.WithTools(o.tools...),
 		llms.WithStream(buffer.AddChunk),
 	)
 
-	turns := llms.ToTurns(response)
-	if len(turns) == 0 {
+	if len(response) == 0 {
 		log.Println("Warning: no turns returned for assistants turn")
 		return nil, nil
-	} else if len(turns) > 1 {
+	} else if len(response) > 1 {
 		log.Println("Warning: multiple turns returned for assistants turn")
 	}
-	return &turns[0], nil
+	return (*llms.Response)(&response[0]), nil
 }
 
-func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt string, originalTurns []llms.Turn, buffer *textBuffer) (*llms.Turn, error) {
+func (o *Orchestrator) processStreaming(ctx context.Context, prompt string, conversation []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
 	span := trace.SpanFromContext(ctx)
 	if o.llm.(LLMWithStream) == nil {
 		return nil, fmt.Errorf("LLM does not support streaming")
 	}
 	llm := o.llm.(LLMWithStream)
 
-	firstRun := true
-	assistantTurn := llms.Turn{Role: llms.TurnRoleAssistant}
+	turn := llms.TurnV1{Trigger: UserPromptTrigger{Prompt: prompt}}
 	for {
-		var prompt *string
-		turns := originalTurns
-		if firstRun {
-			prompt = &originalPrompt
-			firstRun = false
-		} else {
-			turns = append(turns, assistantTurn)
-		}
-
-		stream := llm.PromptWithStream(ctx, prompt,
-			llms.WithTurns(turns...),
+		stream := llm.PromptWithStream(ctx, nil,
+			llms.WithTurnsV1(append(conversation, turn)...),
 			llms.WithTools(o.tools...),
 		)
 
-		var response strings.Builder
+		var message strings.Builder
 		toolCalls := []llms.ToolCall{}
 		for chunk, err := range stream.Chunks(ctx) {
 			if err != nil {
@@ -155,8 +149,10 @@ func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt stri
 				break
 			}
 
-			activeTurn := o.turns.activeTurn
-			if activeTurn != nil && activeTurn.Cancelled {
+			activeTurn := o.conversation.activeTurn
+			if activeTurn != nil && activeTurn.IsCancelled() {
+				// TODO: This is probably not the best way to handle this,
+				// returning something would make more sense
 				return nil, nil
 			}
 
@@ -168,7 +164,7 @@ func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt stri
 			case llms.StreamContentChunk:
 				chunk := chunk.(llms.StreamContentChunk)
 
-				response.WriteString(chunk.Content())
+				message.WriteString(chunk.Content())
 				buffer.AddChunk(chunk.Content())
 
 			case llms.StreamToolCallChunk:
@@ -177,21 +173,23 @@ func (o *Orchestrator) processStreaming(ctx context.Context, originalPrompt stri
 		}
 
 		for _, toolCall := range toolCalls {
-			response, _ := o.callTool(ctx, toolCall)
-			if response != nil {
-				toolCall.Response = response.Content
+			toolResponse, _ := o.callTool(ctx, toolCall)
+			if toolResponse != nil {
+				toolCall.Response = toolResponse.Response
 			}
-			assistantTurn.ToolCalls = append(assistantTurn.ToolCalls, toolCall)
+			turn.ToolCalls = append(turn.ToolCalls, toolCall)
 		}
 
 		if len(toolCalls) == 0 {
-			assistantTurn.Content = response.String()
-			return &assistantTurn, nil
+			return &llms.Response{
+				Content:   message.String(),
+				ToolCalls: turn.ToolCalls,
+			}, nil
 		}
 	}
 }
 
-func (o *Orchestrator) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms.Turn, error) {
+func (o *Orchestrator) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms.ToolCall, error) {
 	toolName := toolCall.Name
 	toolArguments := toolCall.Arguments
 	if toolCall.Name == "" {
@@ -210,10 +208,9 @@ func (o *Orchestrator) callTool(ctx context.Context, toolCall llms.ToolCall) (*l
 			if err != nil {
 				log.Println("Error executing tool:", err)
 			}
-			return &llms.Turn{
-				ToolCallID: toolCall.ID,
-				Role:       llms.TurnRoleAssistant,
-				Content:    resp,
+			return &llms.ToolCall{
+				ID:       toolCall.ID,
+				Response: resp,
 			}, nil
 		}
 	}

@@ -35,7 +35,7 @@ func PromptJSONSchema[T any](
 		opt.ApplyToStructured(&options)
 	}
 
-	messages := toMessages(options.BaseOptions.Instructions, options.BaseOptions.Turns)
+	messages := toMessages(options.BaseOptions.Instructions, options.BaseOptions.TurnsV1)
 	messages = append(messages, message{
 		Role:    messageRoleUser,
 		Content: prompt,

@@ -16,7 +16,7 @@ type Orchestrator struct {
 	IsRecording bool
 	IsSpeaking  bool
 
-	turns Turns
+	conversation Conversation
 
 	transcripts chan promptQueueItem
 	promptEnded sync.WaitGroup
@@ -79,7 +79,7 @@ func (o *Orchestrator) Close() {
 	// TODO: Make sure that deepgramClient is closed and no longer transcribing
 	// before closing the channel
 	close(o.transcripts)
-	if activeTurn := o.turns.activeTurn; activeTurn != nil {
+	if activeTurn := o.conversation.activeTurn; activeTurn != nil {
 		trace.SpanFromContext(activeTurn.ctx).End()
 	}
 }
@@ -119,7 +119,7 @@ func (o *Orchestrator) QueuePrompt(prompt string) {
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
 	o.IsSpeaking = isSpeaking
-	if activeTurn := o.turns.activeTurn; activeTurn != nil && !isSpeaking {
+	if activeTurn := o.conversation.activeTurn; activeTurn != nil && !isSpeaking {
 		activeTurn.StopSpeaking()
 	}
 	if o.audioOutput != nil {
@@ -166,8 +166,8 @@ func (o *Orchestrator) StopRecording() error {
 	return o.stopCapture()
 }
 
-func (o *Orchestrator) Turns() emaContext.TurnsV0 {
-	return &o.turns
+func (o *Orchestrator) ConversationV0() emaContext.ConversationV0 {
+	return &o.conversation
 }
 
 func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
@@ -175,11 +175,11 @@ func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
 	defer span.End()
 	switch o.llm.(type) {
 	case LLMWithStream:
-		_, err := o.processStreaming(ctx, prompt, o.turns.turns, newTextBuffer())
+		_, err := o.processStreaming(ctx, prompt, o.conversation.turns, newTextBuffer())
 		return err
 
 	case LLMWithPrompt:
-		_, err := o.processPromptOld(ctx, prompt, o.turns.turns, newTextBuffer())
+		_, err := o.processPromptOld(ctx, prompt, o.conversation.turns, newTextBuffer())
 		return err
 
 	default:

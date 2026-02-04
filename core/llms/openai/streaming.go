@@ -38,7 +38,7 @@ func PromptWithStream(
 		opt.ApplyToStreaming(&options)
 	}
 
-	messages := toOpenAIMessages(options.BaseOptions.Instructions, options.BaseOptions.Turns)
+	messages := toOpenAIMessages(options.BaseOptions.Instructions, options.BaseOptions.TurnsV1)
 	if prompt != nil {
 		messages = append(messages, openAIMessage{
 			Type:    messageTypeMessage,

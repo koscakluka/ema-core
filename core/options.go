@@ -88,7 +88,7 @@ type AudioOutputV0 interface {
 func WithAudioOutputV0(client AudioOutputV0) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.audioOutput = client
-		if activeTurn := o.turns.activeTurn; activeTurn != nil {
+		if activeTurn := o.conversation.activeTurn; activeTurn != nil {
 			activeTurn.audioBuffer.sampleRate = client.EncodingInfo().SampleRate
 		}
 	}
@@ -102,7 +102,7 @@ type AudioOutputV1 interface {
 func WithAudioOutputV1(client AudioOutputV1) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.audioOutput = client
-		if activeTurn := o.turns.activeTurn; activeTurn != nil {
+		if activeTurn := o.conversation.activeTurn; activeTurn != nil {
 			activeTurn.audioBuffer.sampleRate = client.EncodingInfo().SampleRate
 		}
 	}
