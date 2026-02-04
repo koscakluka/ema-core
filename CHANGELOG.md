@@ -10,11 +10,29 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [v0.0.14] - 2026-02-04
+
+### Added
+
 - `core/WithInterruptionHandlerV2` option and `core/InterruptionHandlerV2`
   interface to pass a context-aware interruption handler
 - `core/texttospeech/deepgram.TextToSpeechClient.SetVoice` method
 - `core/texttospeech/deepgram.TextToSpeechClient.Restart` method for resetting
   a streaming session
+- `core/texttospeech` SpeechGenerator interface with Deepgram implementation
+- Support for TTSV1 client in orchestration
+- OpenTelemetry instrumentation for orchestration, interruption handlers, and
+  Groq LLMs
 
 ### Changed
 
@@ -24,16 +42,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   agent/tool calls and interruption handling
 - `core/llms.Stream.Chunks` now requires a `context.Context` for streaming
   iteration
-- `core/Orchestrator` now runs turn processing through the active-turn pipeline
-  (`core/activeTurn`), affecting how speaking, pausing, and cancellation
-  propagate to audio/text buffers
 
 ### Deprecated
 
-- `core/ClassifyWithContext` option (since v0.0.14) for interruption
-  classification in favor of interruption handlers
-
-### Removed
+- `core/ClassifyWithContext` option for interruption classification in favor of
+  interruption handlers
 
 ### Fixed
 
@@ -41,8 +54,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   handling issues
 - `core/texttospeech/deepgram.TextToSpeechClient` restart behavior to preserve
   post-restart text buffering
-
-### Security
+- Speaking, pausing, and cancellation now propagate more consistently across the
+  turn lifecycle
+- Turns now end cleanly when no audio output is produced
+- Speech processing is skipped when no TTS client is configured
+- Deepgram streaming now signals speech ended on non-empty buffer and handles
+  stream closure gracefully
+- TTS client restarts per active turn as is expected by providers
+- Groq Request to First Token timing now marks only after first chunk is
+  received
+- Audio buffer wakes on speaking state changes
 
 ## [v0.0.13] - 2025-11-20
 
@@ -123,6 +144,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [v0.0.12] - 2025-11-05
 
-[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.13...HEAD
+[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.14...HEAD
+[v0.0.14]: https://github.com/koscakluka/ema-core/compare/v0.0.13...v0.0.14
 [v0.0.13]: https://github.com/koscakluka/ema-core/compare/v0.0.12...v0.0.13
 [v0.0.12]: https://github.com/koscakluka/ema-core/compare/v0.0.11...v0.0.12
