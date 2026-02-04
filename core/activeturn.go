@@ -138,6 +138,17 @@ func (t *activeTurn) Finalise() {
 	t.callbacks.OnFinalise(t)
 }
 
+func (t *activeTurn) Cancel() {
+	t.cancelled = true
+	t.textBuffer.Clear()
+	if err := t.tts.Cancel(); err != nil {
+		span := trace.SpanFromContext(t.ctx)
+		span.RecordError(err)
+	}
+	t.audioBuffer.Stop()
+	t.audioOut.Clear()
+}
+
 func (t *activeTurn) IsMutable() bool {
 	return !t.IsFinalised
 }
@@ -393,6 +404,15 @@ func (t *activeTurnTTS) EndOfText() error {
 		}
 		if err := t.ttsGenerator.EndOfText(); err != nil {
 			return fmt.Errorf("failed to send end of text to tts: %w", err)
+		}
+	}
+	return nil
+}
+
+func (t *activeTurnTTS) Cancel() error {
+	if t.ttsGenerator != nil {
+		if err := t.ttsGenerator.Cancel(); err != nil {
+			return fmt.Errorf("failed to cancel tts: %w", err)
 		}
 	}
 	return nil

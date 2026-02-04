@@ -20,7 +20,7 @@ type Conversation struct {
 // Pop removes the last turn from the stored turns, returns nil if empty
 func (t *Conversation) Pop() *llms.TurnV1 {
 	if activeTurn := t.activeTurn; activeTurn != nil {
-		activeTurn.cancelled = true
+		activeTurn.Cancel()
 		t.activeTurn = nil
 		return &activeTurn.TurnV1
 	}
@@ -36,7 +36,7 @@ func (t *Conversation) Pop() *llms.TurnV1 {
 
 func (t *Conversation) popOld() *llms.Turn {
 	if activeTurn := t.activeTurn; activeTurn != nil {
-		activeTurn.cancelled = true
+		activeTurn.Cancel()
 		turns := llms.ToTurnsV0FromV1([]llms.TurnV1{activeTurn.TurnV1})
 		if len(turns) > 1 {
 			t.activeTurn.Responses = nil
