@@ -19,25 +19,20 @@ import (
 	"github.com/koscakluka/ema-core/internal/utils"
 )
 
-const (
-	defaultEncoding   = "linear16"
-	defaultSampleRate = 48000
-)
-
 func (s *TranscriptionClient) Transcribe(ctx context.Context, opts ...speechtotext.TranscriptionOption) error {
-	options := &speechtotext.TranscriptionOptions{
-		EncodingInfo: audio.EncodingInfo{
-			SampleRate: defaultSampleRate,
-			Encoding:   defaultEncoding,
-		},
-	}
+	options := &speechtotext.TranscriptionOptions{EncodingInfo: audio.GetDefaultEncodingInfo()}
 	for _, opt := range opts {
 		opt(options)
 	}
 
+	encoding, err := convertEncoding(options.EncodingInfo)
+	if err != nil {
+		return fmt.Errorf("invalid encoding: %w", err)
+	}
+
 	conn, err := connectWebsocket(connectionOptions{
-		sampleRate: options.EncodingInfo.SampleRate,
-		encoding:   options.EncodingInfo.Encoding,
+		sampleRate: encoding.SampleRate,
+		encoding:   encoding.Format.Name(),
 
 		detectSpeechStart: options.SpeechStartedCallback != nil,
 		enhanceSpeechEndingDetection: options.TranscriptionCallback != nil ||
@@ -151,7 +146,7 @@ func (s *TranscriptionClient) readAndProcessMessages(ctx context.Context, conn *
 	silenceCtx, silenceCancel := context.WithCancel(ctx)
 	defer silenceCancel()
 
-	go s.generateSilence(silenceCtx)
+	go s.generateSilence(silenceCtx, options.EncodingInfo)
 
 	for {
 		msgType, msg, err := conn.ReadMessage()
@@ -256,7 +251,7 @@ func (s *TranscriptionClient) onSpeechEnded(options speechtotext.TranscriptionOp
 	}
 }
 
-func (s *TranscriptionClient) generateSilence(ctx context.Context) {
+func (s *TranscriptionClient) generateSilence(ctx context.Context, encoding audio.EncodingInfo) {
 	type silenceGeneratorState string
 	const (
 		silenceGeneratorStateWaiting   silenceGeneratorState = "waiting"
@@ -264,12 +259,13 @@ func (s *TranscriptionClient) generateSilence(ctx context.Context) {
 		silenceGeneratorStateKeepAlive silenceGeneratorState = "keepAlive"
 	)
 
-	ticker := time.NewTicker(50 * time.Millisecond)
+	const durationMs = 50
+	const milisecondsPerSecond = 1000
+	ticker := time.NewTicker(durationMs * time.Millisecond)
 
-	silenceValue := byte(0)
-	chunk := make([]byte, 50*defaultSampleRate/1000)
+	chunk := make([]byte, encoding.SampleRate*encoding.Format.ByteSize()*durationMs/milisecondsPerSecond)
 	for i := range chunk {
-		chunk[i] = silenceValue
+		chunk[i] = encoding.SilenceValue()
 	}
 
 	var state = silenceGeneratorStateWaiting

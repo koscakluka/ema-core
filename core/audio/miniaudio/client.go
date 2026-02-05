@@ -9,8 +9,6 @@ import (
 	"github.com/koscakluka/ema-core/core/audio"
 )
 
-const sampleRate = 48000
-
 type Client struct {
 	// audioContext is only saved to be able to uninitialize it, it is an
 	// ownership thing
@@ -93,7 +91,7 @@ func (c *Client) AwaitMark() error {
 
 func (c *Client) EncodingInfo() audio.EncodingInfo {
 	return audio.EncodingInfo{
-		SampleRate: sampleRate,
-		Encoding:   "linear16",
+		SampleRate: audio.DefaultSampleRate,
+		Format:     audio.EncodingLinear16,
 	}
 }

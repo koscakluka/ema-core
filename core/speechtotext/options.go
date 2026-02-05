@@ -54,11 +54,6 @@ func WithInterimTranscriptionCallback(callback func(transcript string)) Transcri
 
 func WithEncodingInfo(encodingInfo audio.EncodingInfo) TranscriptionOption {
 	return func(o *TranscriptionOptions) {
-		if encodingInfo.SampleRate == 0 || encodingInfo.Encoding == "" {
-			// TODO: Issue warning
-			return
-		}
-
 		o.EncodingInfo = encodingInfo
 	}
 }

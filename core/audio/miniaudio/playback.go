@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/gen2brain/malgo"
+	"github.com/koscakluka/ema-core/core/audio"
 )
 
 type playbackClient struct {
@@ -24,7 +25,7 @@ func (c *playbackClient) Init(audioContext *malgo.AllocatedContext) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	sampleRate := uint32(sampleRate)
+	sampleRate := uint32(audio.DefaultSampleRate)
 	channels := 1
 	format := malgo.FormatS16
 	bytesPerFrame := malgo.SampleSizeInBytes(format) * channels
@@ -34,7 +35,7 @@ func (c *playbackClient) Init(audioContext *malgo.AllocatedContext) error {
 	c.config.Playback.Format = format
 	c.config.Playback.Channels = uint32(channels)
 	c.config.Alsa.NoMMap = 1
-	c.config.PeriodSizeInFrames = 480 / 2 // ~10ms at 48kHz
+	c.config.PeriodSizeInFrames = sampleRate / 10 // ~100ms of audio
 	c.config.Periods = 4
 
 	c.audioContext = audioContext
@@ -153,6 +154,7 @@ func (c *playbackClient) processAudio(bytesPerFrame int) malgo.DataProc {
 		}
 
 		if len(c.leftoverAudio) < need {
+			// TODO: Maybe we need to fill it until the end here
 			_ = copy(pOutput, c.leftoverAudio)
 			c.audioMu.Lock()
 			c.leftoverAudio = nil

@@ -10,10 +10,6 @@ import (
 	"github.com/koscakluka/ema-core/core/audio"
 )
 
-const (
-	sampleRate = 8000
-)
-
 type Client struct {
 	bufferSize    int
 	stream        *portaudio.Stream
@@ -32,7 +28,7 @@ func NewClient(bufferSize int) (*Client, error) {
 
 	in := make([]int16, bufferSize)
 	out := make([]int16, bufferSize)
-	stream, err := portaudio.OpenDefaultStream(1, 1, sampleRate, bufferSize, in, out)
+	stream, err := portaudio.OpenDefaultStream(1, 1, audio.DefaultSampleRate, bufferSize, in, out)
 	if err != nil {
 		log.Fatalf("Failed to open PortAudio stream: %v", err)
 	}
@@ -117,7 +113,7 @@ func (c *Client) AwaitMark() error {
 
 func (c *Client) EncodingInfo() audio.EncodingInfo {
 	return audio.EncodingInfo{
-		SampleRate: sampleRate,
-		Encoding:   "linear16",
+		SampleRate: audio.DefaultSampleRate,
+		Format:     audio.EncodingLinear16,
 	}
 }

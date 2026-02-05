@@ -7,13 +7,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
-	"github.com/koscakluka/ema-core/core/audio"
 	"github.com/koscakluka/ema-core/core/texttospeech"
-)
-
-const (
-	defaultSampleRate = 48000
-	defaultEncoding   = "linear16"
 )
 
 type TextToSpeechClient struct {
@@ -34,12 +28,6 @@ func NewTextToSpeechClient(ctx context.Context, voice deepgramVoice) (*TextToSpe
 	}
 
 	client.voice = voice
-	client.options = texttospeech.TextToSpeechOptions{
-		EncodingInfo: audio.EncodingInfo{
-			SampleRate: defaultSampleRate,
-			Encoding:   defaultEncoding,
-		},
-	}
 
 	return client, nil
 }

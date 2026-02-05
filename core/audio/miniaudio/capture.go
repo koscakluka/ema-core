@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/gen2brain/malgo"
+	"github.com/koscakluka/ema-core/core/audio"
 )
 
 type captureClient struct {
@@ -21,7 +22,7 @@ func (c *captureClient) Init(audioContext *malgo.AllocatedContext) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	sampleRate := uint32(sampleRate)
+	sampleRate := uint32(audio.DefaultSampleRate)
 	channels := 1
 	format := malgo.FormatS16
 	bytesPerFrame := malgo.SampleSizeInBytes(format) * channels

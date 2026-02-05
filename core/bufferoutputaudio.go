@@ -5,15 +5,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/koscakluka/ema-core/core/audio"
 )
 
-// TODO: Calculate the error factor based on marks' timestamps,
-// NOTE: This is probably caused by the fact that the array we pass is byte,
-// and the expected encoding is linear16, which is 2 bytes.
-const errorFactor = 0.5
-
 type audioBuffer struct {
-	sampleRate int
+	encodingInfo audio.EncodingInfo
 
 	audio                [][]byte
 	allAudioLoaded       bool
@@ -41,9 +37,9 @@ type audioBufferMark struct {
 	confirmed   bool
 }
 
-func newAudioBuffer() *audioBuffer {
+func newAudioBuffer(encodingInfo audio.EncodingInfo) *audioBuffer {
 	return &audioBuffer{
-		sampleRate:   1,
+		encodingInfo: encodingInfo,
 		updateSignal: make(chan struct{}, 1),
 	}
 }
@@ -209,7 +205,7 @@ func (b *audioBuffer) rewind() {
 	// TODO: Consider identifying silences in the audio so we can continue from
 	// there and make the unpausing seem smoother (as a human would do)
 	playedDuration := time.Since(b.lastMarkTimestamp)
-	samplesPlayed := audioSamples(playedDuration, b.sampleRate)
+	samplesPlayed := audioSamples(playedDuration, b.encodingInfo)
 	chunksPlayed := 0
 	for _, chunk := range b.audio[b.externalPlayhead:] {
 		samplesPlayed -= len(chunk)
@@ -265,10 +261,10 @@ func audioLen(audio [][]byte) int {
 	return chunksTotalLength
 }
 
-func audioDuration(audio [][]byte, sampleRate int) time.Duration {
-	return time.Duration(float64(audioLen(audio)) / float64(sampleRate) * float64(time.Second) * errorFactor)
+func audioDuration(audio [][]byte, encodingInfo audio.EncodingInfo) time.Duration {
+	return time.Duration(float64(audioLen(audio)) / float64(encodingInfo.SampleRate) * float64(time.Second) / float64(encodingInfo.Format.ByteSize()))
 }
 
-func audioSamples(duration time.Duration, sampleRate int) int {
-	return int(float64(duration) / float64(time.Second) * float64(sampleRate) / errorFactor)
+func audioSamples(duration time.Duration, encodingInfo audio.EncodingInfo) int {
+	return int(float64(duration) / float64(time.Second) * float64(encodingInfo.SampleRate) * float64(encodingInfo.Format.ByteSize()))
 }

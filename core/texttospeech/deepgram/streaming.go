@@ -48,6 +48,7 @@ func (c *TextToSpeechClient) NewSpeechGeneratorV0(ctx context.Context, opts ...t
 				SpeechMarkCallback:    func(string) {},
 				SpeechEndedCallbackV0: func(texttospeech.SpeechEndedReport) {},
 				ErrorCallback:         func(error) {},
+				EncodingInfo:          audio.GetDefaultEncodingInfo(),
 			},
 		},
 	}
@@ -56,8 +57,12 @@ func (c *TextToSpeechClient) NewSpeechGeneratorV0(ctx context.Context, opts ...t
 		opt(&req.options.TextToSpeechOptions)
 	}
 
-	var err error
-	if req.ws, err = connectWebsocket(c.voice, c.options.EncodingInfo); err != nil {
+	encodingInfo, err := convertEncoding(req.options.EncodingInfo)
+	if err != nil {
+		return nil, fmt.Errorf("invalid encoding: %w", err)
+	}
+
+	if req.ws, err = connectWebsocket(c.voice, *encodingInfo); err != nil {
 		return nil, fmt.Errorf("failed to open websocket: %w", err)
 	}
 
@@ -66,7 +71,7 @@ func (c *TextToSpeechClient) NewSpeechGeneratorV0(ctx context.Context, opts ...t
 	return req, nil
 }
 
-func connectWebsocket(voice deepgramVoice, encodingInfo audio.EncodingInfo) (*websocket.Conn, error) {
+func connectWebsocket(voice deepgramVoice, encodingInfo encodingInfo) (*websocket.Conn, error) {
 	// TODO: Allow passing API key in constructor
 	apiKey, ok := os.LookupEnv("DEEPGRAM_API_KEY")
 	if !ok {
@@ -74,7 +79,7 @@ func connectWebsocket(voice deepgramVoice, encodingInfo audio.EncodingInfo) (*we
 	}
 
 	urlValues := url.Values{}
-	urlValues.Set("encoding", encodingInfo.Encoding)
+	urlValues.Set("encoding", encodingInfo.Format.Name())
 	urlValues.Set("sample_rate", strconv.Itoa(encodingInfo.SampleRate))
 	urlValues.Set("model", string(voice))
 	urlValues.Set("container", "none")
@@ -334,7 +339,12 @@ func (c *TextToSpeechClient) OpenStream(ctx context.Context, opts ...texttospeec
 		opt(&c.options)
 	}
 
-	conn, err := connectWebsocket(c.voice, c.options.EncodingInfo)
+	encodingInfo, err := convertEncoding(c.options.EncodingInfo)
+	if err != nil {
+		return fmt.Errorf("invalid encoding:", err)
+	}
+
+	conn, err := connectWebsocket(c.voice, *encodingInfo)
 	if err != nil {
 		return fmt.Errorf("failed to open websocket: %w", err)
 	}

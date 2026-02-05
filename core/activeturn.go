@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/koscakluka/ema-core/core/audio"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/texttospeech"
 	"go.opentelemetry.io/otel/attribute"
@@ -88,7 +89,7 @@ func newActiveTurn(ctx context.Context, trigger llms.TriggerV0, components activ
 
 		ctx:         ctx,
 		textBuffer:  *newTextBuffer(),
-		audioBuffer: *newAudioBuffer(),
+		audioBuffer: *newAudioBuffer(audio.GetDefaultEncodingInfo()),
 		tts:         activeTurnTTS{},
 		components:  components,
 		callbacks:   *(new(activeTurnCallbacks).defaults().with(callbacks)),
@@ -97,10 +98,8 @@ func newActiveTurn(ctx context.Context, trigger llms.TriggerV0, components activ
 		finalResponse: &llms.TurnResponseV0{},
 	}
 
-	if activeTurn.components.AudioOutput != nil {
-		activeTurn.audioBuffer.sampleRate = activeTurn.components.AudioOutput.EncodingInfo().SampleRate
-	}
-	activeTurn.audioOut.init(activeTurn)
+	activeTurn.audioOut.init(activeTurn.components.AudioOutput)
+	activeTurn.audioBuffer.encodingInfo = activeTurn.audioOut.EncodingInfo()
 
 	return activeTurn
 }
@@ -440,14 +439,14 @@ type activeTurnAudioOutput struct {
 //
 // DO NOT USE! This is a temporary method and will be removed once we can remove
 // the old audio output version
-func (t *activeTurnAudioOutput) init(turn *activeTurn) {
-	if turn.components.AudioOutput != nil {
-		if _, ok := turn.components.AudioOutput.(AudioOutputV1); ok {
-			t.v1 = turn.components.AudioOutput.(AudioOutputV1)
+func (t *activeTurnAudioOutput) init(audioOutput audioOutput) {
+	if audioOutput != nil {
+		if _, ok := audioOutput.(AudioOutputV1); ok {
+			t.v1 = audioOutput.(AudioOutputV1)
 			t.isV1 = true
 			t.supportsCallbackMarks = true
 			t.connected = true
-		} else if client, ok := turn.components.AudioOutput.(AudioOutputV0); ok {
+		} else if client, ok := audioOutput.(AudioOutputV0); ok {
 			t.v0 = client
 			t.connected = true
 		}
@@ -480,5 +479,15 @@ func (t *activeTurnAudioOutput) Clear() {
 		t.v1.ClearBuffer()
 	} else if t.v0 != nil {
 		t.v0.ClearBuffer()
+	}
+}
+
+func (t *activeTurnAudioOutput) EncodingInfo() audio.EncodingInfo {
+	if t.v1 != nil {
+		return t.v1.EncodingInfo()
+	} else if t.v0 != nil {
+		return t.v0.EncodingInfo()
+	} else {
+		return audio.GetDefaultEncodingInfo()
 	}
 }

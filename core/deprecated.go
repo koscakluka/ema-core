@@ -53,9 +53,6 @@ type InterruptionClassifier interface {
 func WithAudioOutput(client AudioOutputV0) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.audioOutput = client
-		if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-			activeTurn.audioBuffer.sampleRate = client.EncodingInfo().SampleRate
-		}
 	}
 }
 

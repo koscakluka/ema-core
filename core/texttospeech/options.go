@@ -76,11 +76,6 @@ func WithErrorCallback(callback func(error)) TextToSpeechOption {
 
 func WithEncodingInfo(encodingInfo audio.EncodingInfo) TextToSpeechOption {
 	return func(o *TextToSpeechOptions) {
-		if encodingInfo.SampleRate == 0 || encodingInfo.Encoding == "" {
-			// TODO: Issue warning
-			return
-		}
-
 		o.EncodingInfo = encodingInfo
 	}
 }
