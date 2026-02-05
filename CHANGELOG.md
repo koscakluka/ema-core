@@ -10,13 +10,33 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `core/llms/TurnV1` with IDs, triggers, and response tracking
+- `core/context/ConversationV0` interface for turn history access
+- LLM prompt options now accept `TurnV1` history
+- OpenCode helper commands for the repo
+
 ### Changed
+
+- **Breaking:** removed deprecated interruption classifier package paths
+- Groq/OpenAI history serialization now uses `TurnV1` triggers and responses
+- Default audio encoding is now 16kHz linear16 across audio I/O and Deepgram
 
 ### Deprecated
 
+- `core/llms/Turn` in favor of `core/llms/TurnV1`
+- `core/Orchestrator.Turns` in favor of `core/Orchestrator.Conversation`
+
 ### Removed
 
+- legacy interruption classifier APIs and types
+- leftover `main` package file
+
 ### Fixed
+
+- encoding defaults now stay consistent across components
+- audio timing and mark alignment now respect encoding byte size
+- turn cancellation now clears buffers and cancels active TTS generation
+- Deepgram keep-alive silence generation now matches selected encoding
 
 ### Security
 
