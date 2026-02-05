@@ -11,8 +11,6 @@ import (
 
 type Conversation struct {
 	turns []llms.TurnV1
-	// TODO: Consider adding ID to turns to be able to find the active turn
-	// if needed instead of keeping track of an index
 
 	activeTurn *activeTurn
 }

@@ -49,6 +49,7 @@ type Turn struct {
 }
 
 type TurnV1 struct {
+	ID string
 	// Trigger is what initiated the turn, e.g. a user message, notification,
 	// completed tool call, etc.
 	Trigger TriggerV0

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/texttospeech"
 	"go.opentelemetry.io/otel/attribute"
@@ -80,7 +81,10 @@ type activeTurnConfig struct {
 
 func newActiveTurn(ctx context.Context, trigger llms.TriggerV0, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) *activeTurn {
 	activeTurn := &activeTurn{
-		TurnV1: llms.TurnV1{Trigger: trigger},
+		TurnV1: llms.TurnV1{
+			ID:      uuid.NewString(),
+			Trigger: trigger,
+		},
 
 		ctx:         ctx,
 		textBuffer:  *newTextBuffer(),

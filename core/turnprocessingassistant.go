@@ -84,13 +84,20 @@ func (o *Orchestrator) startAssistantLoop() {
 				}
 				span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
 				span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.transcripts)))
-				span.End()
-				// TODO: Check if turns IDs match
+				activeTurnID := o.conversation.activeTurn.TurnV1.ID
 				if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-					o.conversation.turns = append(o.conversation.turns, activeTurn.TurnV1)
-					o.conversation.activeTurn = nil
-					o.promptEnded.Done()
+					if activeTurn.TurnV1.ID != activeTurnID {
+						// NOTE: This should never happen, but we want to know
+						// if it does
+						span.RecordError(fmt.Errorf("turn IDs do not match"))
+						span.SetStatus(codes.Error, "turn IDs do not match")
+					} else {
+						o.conversation.turns = append(o.conversation.turns, activeTurn.TurnV1)
+						o.conversation.activeTurn = nil
+						o.promptEnded.Done()
+					}
 				}
+				span.End()
 			},
 		}
 		if err := o.conversation.processActiveTurn(ctx, trigger, components, callbacks,
