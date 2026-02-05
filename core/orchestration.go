@@ -23,15 +23,14 @@ type Orchestrator struct {
 
 	tools []llms.Tool
 
-	llm                    LLM
-	speechToTextClient     SpeechToText
-	textToSpeechClient     textToSpeech
-	audioInput             AudioInput
-	audioOutput            audioOutput
-	interruptionClassifier InterruptionClassifier
-	interruptionHandlerV0  InterruptionHandlerV0
-	interruptionHandlerV1  InterruptionHandlerV1
-	interruptionHandlerV2  InterruptionHandlerV2
+	llm                   LLM
+	speechToTextClient    SpeechToText
+	textToSpeechClient    textToSpeech
+	audioInput            AudioInput
+	audioOutput           audioOutput
+	interruptionHandlerV0 InterruptionHandlerV0
+	interruptionHandlerV1 InterruptionHandlerV1
+	interruptionHandlerV2 InterruptionHandlerV2
 
 	orchestrateOptions OrchestrateOptions
 	config             *Config
@@ -50,26 +49,6 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 
 	for _, opt := range opts {
 		opt(o)
-	}
-
-	// TODO: Remove this in a couple of releases
-	if o.interruptionClassifier == nil {
-		switch o.llm.(type) {
-		case LLMWithPrompt:
-			o.interruptionClassifier = NewSimpleInterruptionClassifier(o.llm.(LLMWithPrompt))
-		case InterruptionLLM:
-			// HACK: To avoid changing the signature of
-			// NewSimpleInterruptionClassifier we pass nil for LLM right now,
-			// when we change the whole classifier concept we can change the
-			// signature
-			o.interruptionClassifier = NewSimpleInterruptionClassifier(nil, ClassifierWithInterruptionLLM(o.llm.(InterruptionLLM)))
-		case LLMWithGeneralPrompt:
-			// HACK: To avoid changing the signature of
-			// NewSimpleInterruptionClassifier we pass nil for LLM right now,
-			// when we change the whole classifier concept we can change the
-			// signature
-			o.interruptionClassifier = NewSimpleInterruptionClassifier(nil, ClassifierWithGeneralPromptLLM(o.llm.(LLMWithGeneralPrompt)))
-		}
 	}
 
 	return o

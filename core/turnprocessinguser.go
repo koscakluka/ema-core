@@ -98,18 +98,6 @@ func (o *Orchestrator) processUserTurn(prompt string) {
 				})
 				return
 			}
-		} else if o.interruptionClassifier != nil {
-			interruption, err := o.interruptionClassifier.Classify(prompt, llms.ToMessages(llms.ToTurnsV0FromV1(o.conversation.turns)), ClassifyWithTools(o.tools), ClassifyWithContext(ctx))
-			if err != nil {
-				// TODO: Retry?
-				log.Printf("Failed to classify interruption: %v", err)
-			} else {
-				o.conversation.updateInterruption(*interruptionID, func(i *llms.InterruptionV0) { i.Type = string(interruption) })
-				passthrough, err = o.respondToInterruption(prompt, interruption)
-				if err != nil {
-					log.Printf("Failed to respond to interruption: %v", err)
-				}
-			}
 		}
 		o.conversation.updateInterruption(*interruptionID, func(interruption *llms.InterruptionV0) {
 			interruption.Resolved = true
