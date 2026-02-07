@@ -8,6 +8,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v0.0.15] - 2026-02-07
+
 ### Added
 
 - `core/llms/TurnV1` with IDs, triggers, and response tracking
@@ -37,8 +39,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - audio timing and mark alignment now respect encoding byte size
 - turn cancellation now clears buffers and cancels active TTS generation
 - Deepgram keep-alive silence generation now matches selected encoding
-
-### Security
 
 ## [v0.0.14] - 2026-02-04
 
@@ -164,7 +164,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [v0.0.12] - 2025-11-05
 
-[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.14...HEAD
+[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.15...HEAD
+[v0.0.15]: https://github.com/koscakluka/ema-core/compare/v0.0.14...v0.0.15
 [v0.0.14]: https://github.com/koscakluka/ema-core/compare/v0.0.13...v0.0.14
 [v0.0.13]: https://github.com/koscakluka/ema-core/compare/v0.0.12...v0.0.13
 [v0.0.12]: https://github.com/koscakluka/ema-core/compare/v0.0.11...v0.0.12
