@@ -18,8 +18,8 @@ type Orchestrator struct {
 
 	conversation Conversation
 
-	transcripts chan promptQueueItem
-	promptEnded sync.WaitGroup
+	triggerQueue chan triggerQueueItem
+	promptEnded  sync.WaitGroup
 
 	tools []llms.Tool
 
@@ -40,11 +40,11 @@ type Orchestrator struct {
 
 func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 	o := &Orchestrator{
-		IsRecording: false,
-		IsSpeaking:  false,
-		transcripts: make(chan promptQueueItem, 10), // TODO: Figure out good valiues for this
-		config:      &Config{AlwaysRecording: true},
-		baseContext: context.Background(),
+		IsRecording:  false,
+		IsSpeaking:   false,
+		triggerQueue: make(chan triggerQueueItem, 10), // TODO: Figure out good valiues for this
+		config:       &Config{AlwaysRecording: true},
+		baseContext:  context.Background(),
 	}
 
 	for _, opt := range opts {
@@ -57,7 +57,7 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 func (o *Orchestrator) Close() {
 	// TODO: Make sure that deepgramClient is closed and no longer transcribing
 	// before closing the channel
-	close(o.transcripts)
+	close(o.triggerQueue)
 	if activeTurn := o.conversation.activeTurn; activeTurn != nil {
 		trace.SpanFromContext(activeTurn.ctx).End()
 	}
@@ -82,7 +82,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 }
 
 func (o *Orchestrator) SendPrompt(prompt string) {
-	o.processUserTurn(prompt)
+	o.respondToTrigger(NewUserPromptTrigger(prompt))
 }
 
 func (o *Orchestrator) SendAudio(audio []byte) error {
@@ -93,7 +93,7 @@ func (o *Orchestrator) SendAudio(audio []byte) error {
 // turn is finished. It bypasses the normal processing pipeline and can be useful
 // for handling prompts that are sure to follow up after the current turn.
 func (o *Orchestrator) QueuePrompt(prompt string) {
-	go o.queuePrompt(prompt)
+	go o.queueTrigger(NewUserPromptTrigger(prompt))
 }
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {

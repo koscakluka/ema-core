@@ -3,11 +3,8 @@ package orchestration
 import (
 	"context"
 	"log"
-	"time"
 
-	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/speechtotext"
-	"github.com/koscakluka/ema-core/internal/utils"
 )
 
 func (o *Orchestrator) initSST() {
@@ -39,7 +36,7 @@ func (o *Orchestrator) initSST() {
 					o.orchestrateOptions.onInterimTranscription("")
 				}
 
-				o.SendPrompt(transcript)
+				go o.respondToTrigger(NewTranscribedUserPromptTrigger(transcript))
 			}),
 		}
 		if o.audioInput != nil {
@@ -50,72 +47,4 @@ func (o *Orchestrator) initSST() {
 			log.Fatalf("Failed to start transcribing: %v", err)
 		}
 	}
-}
-
-func (o *Orchestrator) processUserTurn(prompt string) {
-	var interruptionID *int64
-	ctx := context.Background()
-	if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-		interruptionID = utils.Ptr(time.Now().UnixNano())
-		if err := activeTurn.AddInterruption(llms.InterruptionV0{
-			ID:     *interruptionID,
-			Source: prompt,
-		}); err != nil {
-			interruptionID = nil
-		} else {
-			ctx = activeTurn.ctx
-		}
-	}
-
-	passthrough := &prompt
-	if interruptionID != nil {
-		if o.interruptionHandlerV2 != nil {
-			if interruption, err := o.interruptionHandlerV2.HandleV2(ctx, *interruptionID, o, o.tools); err != nil {
-				log.Printf("Failed to handle interruption: %v", err)
-			} else {
-				o.conversation.updateInterruption(*interruptionID, func(update *llms.InterruptionV0) {
-					update.Type = interruption.Type
-					update.Resolved = interruption.Resolved
-				})
-				return
-			}
-		} else if o.interruptionHandlerV1 != nil {
-			if interruption, err := o.interruptionHandlerV1.HandleV1(*interruptionID, o, o.tools); err != nil {
-				log.Printf("Failed to handle interruption: %v", err)
-			} else {
-				o.conversation.updateInterruption(*interruptionID, func(update *llms.InterruptionV0) {
-					update.Type = interruption.Type
-					update.Resolved = interruption.Resolved
-				})
-				return
-			}
-		} else if o.interruptionHandlerV0 != nil {
-			if err := o.interruptionHandlerV0.HandleV0(prompt, llms.ToTurnsV0FromV1(o.conversation.turns), o.tools, o); err != nil {
-				log.Printf("Failed to handle interruption: %v", err)
-			} else {
-				o.conversation.updateInterruption(*interruptionID, func(interruption *llms.InterruptionV0) {
-					interruption.Resolved = true
-				})
-				return
-			}
-		}
-		o.conversation.updateInterruption(*interruptionID, func(interruption *llms.InterruptionV0) {
-			interruption.Resolved = true
-		})
-	}
-	if passthrough != nil {
-		o.queuePrompt(*passthrough)
-	}
-}
-
-func (o *Orchestrator) queuePrompt(prompt string) {
-	if o.orchestrateOptions.onTranscription != nil {
-		o.orchestrateOptions.onTranscription(prompt)
-	}
-	o.transcripts <- promptQueueItem{content: prompt, queuedAt: time.Now()}
-}
-
-type promptQueueItem struct {
-	content  string
-	queuedAt time.Time
 }

@@ -14,16 +14,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type UserPromptTrigger struct {
-	Prompt string
+type triggerQueueItem struct {
+	trigger  llms.TriggerV0
+	queuedAt time.Time
 }
 
-func (t UserPromptTrigger) String() string {
-	return t.Prompt
+func (o *Orchestrator) queueTrigger(trigger llms.TriggerV0) {
+	o.triggerQueue <- triggerQueueItem{trigger: trigger, queuedAt: time.Now()}
 }
 
 func (o *Orchestrator) startAssistantLoop() {
-	for promptQueueItem := range o.transcripts {
+	for promptQueueItem := range o.triggerQueue {
 		if o.conversation.activeTurn != nil {
 			o.promptEnded.Wait()
 		}
@@ -32,22 +33,21 @@ func (o *Orchestrator) startAssistantLoop() {
 		ctx, span := tracer.Start(o.baseContext, "process turn")
 		span.AddEvent("taken out of queue", trace.WithAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds())))
 		span.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
-		transcript := promptQueueItem.content
 
 		messages := o.conversation
-		trigger := UserPromptTrigger{Prompt: transcript}
+		trigger := promptQueueItem.trigger
 
 		components := activeTurnComponents{
 			AudioOutput: o.audioOutput,
 			ResponseGenerator: func(ctx context.Context, buffer *textBuffer) (*llms.Response, error) {
 				switch o.llm.(type) {
 				case LLMWithStream:
-					return o.processStreaming(ctx, transcript, messages.turns, buffer)
+					return o.processStreaming(ctx, trigger.String(), messages.turns, buffer)
 
 				// TODO: Implement this
 				// case LLMWithGeneralPrompt:
 				case LLMWithPrompt:
-					return o.processPromptOld(ctx, transcript, messages.turns, buffer)
+					return o.processPromptOld(ctx, trigger.String(), messages.turns, buffer)
 				default:
 					// Impossible state
 					return nil, fmt.Errorf("unknown LLM type")
@@ -83,7 +83,7 @@ func (o *Orchestrator) startAssistantLoop() {
 					interruptionTypes = append(interruptionTypes, interruption.Type)
 				}
 				span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
-				span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.transcripts)))
+				span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.triggerQueue)))
 				activeTurnID := o.conversation.activeTurn.TurnV1.ID
 				if activeTurn := o.conversation.activeTurn; activeTurn != nil {
 					if activeTurn.TurnV1.ID != activeTurnID {
