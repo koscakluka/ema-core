@@ -35,6 +35,22 @@ func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
 		if t.IsTranscribed && o.orchestrateOptions.onTranscription != nil {
 			o.orchestrateOptions.onTranscription(prompt)
 		}
+	case triggers.CallToolTrigger:
+		if t.Tool != nil {
+			// TODO: This response should be recorded somewhere, probably in the
+			// interruption, and might even warrant a response
+			_, err := o.callTool(ctx, *t.Tool)
+			if err != nil {
+				span.RecordError(err)
+			}
+		} else {
+			// TODO: There should be some kind of response somewhere, at least
+			// recorded, probably in the interruption
+			if err := o.CallTool(ctx, t.Prompt); err != nil {
+				span.RecordError(err)
+			}
+		}
+		return
 
 	default:
 		span.RecordError(fmt.Errorf("skipped processing trigger of unknown type: %T", trigger))
