@@ -34,20 +34,19 @@ func (o *Orchestrator) startAssistantLoop() {
 		span.AddEvent("taken out of queue", trace.WithAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds())))
 		span.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
 
-		messages := o.conversation
 		trigger := promptQueueItem.trigger
 
 		components := activeTurnComponents{
 			AudioOutput: o.audioOutput,
-			ResponseGenerator: func(ctx context.Context, buffer *textBuffer) (*llms.Response, error) {
+			ResponseGenerator: func() (func(context.Context, llms.TriggerV0, []llms.TurnV1, *textBuffer) (*llms.Response, error), error) {
 				switch o.llm.(type) {
 				case LLMWithStream:
-					return o.processStreaming(ctx, trigger.String(), messages.turns, buffer)
+					return o.processStreaming, nil
 
 				// TODO: Implement this
 				// case LLMWithGeneralPrompt:
 				case LLMWithPrompt:
-					return o.processPromptOld(ctx, trigger.String(), messages.turns, buffer)
+					return o.processPromptOld, nil
 				default:
 					// Impossible state
 					return nil, fmt.Errorf("unknown LLM type")
@@ -113,12 +112,12 @@ func (o *Orchestrator) startAssistantLoop() {
 	}
 }
 
-func (o *Orchestrator) processPromptOld(ctx context.Context, prompt string, conversations []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
+func (o *Orchestrator) processPromptOld(ctx context.Context, trigger llms.TriggerV0, conversations []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
 	if o.llm.(LLMWithPrompt) == nil {
 		return nil, fmt.Errorf("LLM does not support prompting")
 	}
 
-	response, _ := o.llm.(LLMWithPrompt).Prompt(ctx, prompt,
+	response, _ := o.llm.(LLMWithPrompt).Prompt(ctx, trigger.String(),
 		llms.WithTurnsV1(conversations...),
 		llms.WithTools(o.tools...),
 		llms.WithStream(buffer.AddChunk),
@@ -133,14 +132,14 @@ func (o *Orchestrator) processPromptOld(ctx context.Context, prompt string, conv
 	return (*llms.Response)(&response[0]), nil
 }
 
-func (o *Orchestrator) processStreaming(ctx context.Context, prompt string, conversation []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
+func (o *Orchestrator) processStreaming(ctx context.Context, trigger llms.TriggerV0, conversation []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
 	span := trace.SpanFromContext(ctx)
 	if o.llm.(LLMWithStream) == nil {
 		return nil, fmt.Errorf("LLM does not support streaming")
 	}
 	llm := o.llm.(LLMWithStream)
 
-	turn := llms.TurnV1{Trigger: UserPromptTrigger{Prompt: prompt}}
+	turn := llms.TurnV1{Trigger: trigger}
 	for {
 		stream := llm.PromptWithStream(ctx, nil,
 			llms.WithTurnsV1(append(conversation, turn)...),

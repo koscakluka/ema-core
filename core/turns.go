@@ -129,8 +129,8 @@ func (t *Conversation) processActiveTurn(ctx context.Context, trigger llms.Trigg
 	activeTurn := newActiveTurn(ctx, trigger, components, callbacks, config)
 	t.activeTurn = activeTurn
 	ctx, cancel := context.WithCancel(ctx)
-	run := func(ctx context.Context, wg *sync.WaitGroup, f func(context.Context) error) {
-		if err := f(ctx); err != nil {
+	run := func(wg *sync.WaitGroup, f func() error) {
+		if err := f(); err != nil {
 			cancel()
 		}
 		wg.Done()
@@ -138,10 +138,10 @@ func (t *Conversation) processActiveTurn(ctx context.Context, trigger llms.Trigg
 
 	wg := &sync.WaitGroup{}
 	wg.Add(3)
-	go run(ctx, wg, t.activeTurn.generateResponse)
+	go run(wg, func() error { return t.activeTurn.generateResponse(ctx, t.turns) })
 
-	go run(ctx, wg, t.activeTurn.processResponseText)
-	go run(ctx, wg, t.activeTurn.processSpeech)
+	go run(wg, func() error { return t.activeTurn.processResponseText(ctx) })
+	go run(wg, func() error { return t.activeTurn.processSpeech(ctx) })
 
 	wg.Wait()
 	activeTurn.Finalise()

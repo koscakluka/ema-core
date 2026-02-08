@@ -6,34 +6,9 @@ import (
 	"time"
 
 	"github.com/koscakluka/ema-core/core/llms"
+	"github.com/koscakluka/ema-core/core/triggers"
 	"go.opentelemetry.io/otel/trace"
 )
-
-type UserPromptTrigger struct {
-	Prompt        string
-	IsTranscribed bool
-	Timestamp     time.Time
-}
-
-func (t UserPromptTrigger) String() string {
-	return t.Prompt
-}
-
-func NewUserPromptTrigger(prompt string) UserPromptTrigger {
-	return UserPromptTrigger{
-		Prompt:        prompt,
-		IsTranscribed: false,
-		Timestamp:     time.Now(),
-	}
-}
-
-func NewTranscribedUserPromptTrigger(prompt string) UserPromptTrigger {
-	return UserPromptTrigger{
-		Prompt:        prompt,
-		IsTranscribed: true,
-		Timestamp:     time.Now(),
-	}
-}
 
 func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
 	activeTurn := o.conversation.activeTurn
@@ -54,7 +29,7 @@ func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
 	}
 
 	switch t := trigger.(type) {
-	case UserPromptTrigger:
+	case triggers.UserPromptTrigger:
 		prompt := t.Prompt
 		// TODO: Move this and note the change
 		if t.IsTranscribed && o.orchestrateOptions.onTranscription != nil {

@@ -9,6 +9,7 @@ import (
 
 	emaContext "github.com/koscakluka/ema-core/core/context"
 	"github.com/koscakluka/ema-core/core/llms"
+	"github.com/koscakluka/ema-core/core/triggers"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -82,7 +83,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 }
 
 func (o *Orchestrator) SendPrompt(prompt string) {
-	o.respondToTrigger(NewUserPromptTrigger(prompt))
+	o.respondToTrigger(triggers.NewUserPromptTrigger(prompt))
 }
 
 func (o *Orchestrator) SendAudio(audio []byte) error {
@@ -93,7 +94,7 @@ func (o *Orchestrator) SendAudio(audio []byte) error {
 // turn is finished. It bypasses the normal processing pipeline and can be useful
 // for handling prompts that are sure to follow up after the current turn.
 func (o *Orchestrator) QueuePrompt(prompt string) {
-	go o.queueTrigger(NewUserPromptTrigger(prompt))
+	go o.queueTrigger(triggers.NewUserPromptTrigger(prompt))
 }
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
@@ -154,11 +155,11 @@ func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
 	defer span.End()
 	switch o.llm.(type) {
 	case LLMWithStream:
-		_, err := o.processStreaming(ctx, prompt, o.conversation.turns, newTextBuffer())
+		_, err := o.processStreaming(ctx, triggers.NewUserPromptTrigger(prompt), o.conversation.turns, newTextBuffer())
 		return err
 
 	case LLMWithPrompt:
-		_, err := o.processPromptOld(ctx, prompt, o.conversation.turns, newTextBuffer())
+		_, err := o.processPromptOld(ctx, triggers.NewUserPromptTrigger(prompt), o.conversation.turns, newTextBuffer())
 		return err
 
 	default:

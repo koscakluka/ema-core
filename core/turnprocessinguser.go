@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/koscakluka/ema-core/core/speechtotext"
+	"github.com/koscakluka/ema-core/core/triggers"
 )
 
 func (o *Orchestrator) initSST() {
@@ -36,7 +37,7 @@ func (o *Orchestrator) initSST() {
 					o.orchestrateOptions.onInterimTranscription("")
 				}
 
-				go o.respondToTrigger(NewTranscribedUserPromptTrigger(transcript))
+				go o.respondToTrigger(triggers.NewTranscribedUserPromptTrigger(transcript))
 			}),
 		}
 		if o.audioInput != nil {

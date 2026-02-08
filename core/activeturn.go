@@ -37,7 +37,7 @@ type activeTurn struct {
 type activeTurnComponents struct {
 	TextToSpeechClient textToSpeech
 	AudioOutput        audioOutput
-	ResponseGenerator  func(context.Context, *textBuffer) (*llms.Response, error) // TODO: Fix the signature to include prompt and "history"
+	ResponseGenerator  func() (func(context.Context, llms.TriggerV0, []llms.TurnV1, *textBuffer) (*llms.Response, error), error)
 }
 
 type activeTurnCallbacks struct {
@@ -156,11 +156,15 @@ func (t *activeTurn) IsMutable() bool {
 	return !t.IsFinalised
 }
 
-func (t *activeTurn) generateResponse(ctx context.Context) error {
+func (t *activeTurn) generateResponse(ctx context.Context, conversation []llms.TurnV1) error {
 	ctx, span := tracer.Start(ctx, "generate response")
 	defer span.End()
 
-	response, err := t.components.ResponseGenerator(ctx, &t.textBuffer)
+	generateResponse, err := t.components.ResponseGenerator()
+	if err != nil {
+		return fmt.Errorf("failed to get response generator: %w", err)
+	}
+	response, err := generateResponse(ctx, t.Trigger, conversation, &t.textBuffer)
 	if err != nil {
 		err := fmt.Errorf("failed to generate response: %w", err)
 		span.RecordError(err)
