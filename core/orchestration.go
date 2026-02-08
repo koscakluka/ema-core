@@ -90,6 +90,10 @@ func (o *Orchestrator) SendAudio(audio []byte) error {
 	return o.sendAudio(audio)
 }
 
+func (o *Orchestrator) Trigger(trigger llms.TriggerV0) {
+	o.respondToTrigger(trigger)
+}
+
 // QueuePrompt immediately queues the prompt for processing after the current
 // turn is finished. It bypasses the normal processing pipeline and can be useful
 // for handling prompts that are sure to follow up after the current turn.
