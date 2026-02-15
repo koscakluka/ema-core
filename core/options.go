@@ -161,6 +161,7 @@ type OrchestrateOptions struct {
 	onResponse             func(response string)
 	onResponseEnd          func()
 	onCancellation         func()
+	onInputAudio           func(audio []byte)
 	onAudio                func(audio []byte)
 	onAudioEnded           func(transcript string)
 }
@@ -212,6 +213,17 @@ func WithAudioCallback(callback func(audio []byte)) OrchestrateOption {
 func WithAudioEndedCallback(callback func(transcript string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
 		o.onAudioEnded = callback
+	}
+}
+
+// WithInputAudioCallback registers a callback for raw input audio chunks.
+//
+// The provided slice is passed through as-is (no defensive copy). Receivers
+// can choose whether to process it immediately, copy it, or retain it. The
+// callback runs inline on the input-audio path and should not block.
+func WithInputAudioCallback(callback func(audio []byte)) OrchestrateOption {
+	return func(o *OrchestrateOptions) {
+		o.onInputAudio = callback
 	}
 }
 

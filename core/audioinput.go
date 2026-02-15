@@ -29,6 +29,10 @@ func (o *Orchestrator) initAudioInput() {
 
 // sendAudio sends audio to the speech to text client if one is set
 func (o *Orchestrator) sendAudio(audio []byte) error {
+	if o.orchestrateOptions.onInputAudio != nil {
+		o.orchestrateOptions.onInputAudio(audio)
+	}
+
 	if o.speechToTextClient == nil {
 		log.Println("Warning: SendAudio called but speech to text client is not set")
 		return nil
