@@ -11,6 +11,38 @@ import (
 )
 
 func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
+	switch t := trigger.(type) {
+	case triggers.SpeechStartedTrigger:
+		// TODO: Consider pausing on speech start
+		// maybe with some wait time for interim transcript
+		// or maybe pausing on interim transcript is enough
+		if o.orchestrateOptions.onSpeakingStateChanged != nil {
+			o.orchestrateOptions.onSpeakingStateChanged(true)
+		}
+		return
+	case triggers.SpeechEndedTrigger:
+		if o.orchestrateOptions.onSpeakingStateChanged != nil {
+			o.orchestrateOptions.onSpeakingStateChanged(false)
+		}
+		return
+	case triggers.InterimTranscriptionTrigger:
+		// TODO: Start generating interruption here already
+		// marking the ID will probably be required to keep track of it
+		if o.orchestrateOptions.onInterimTranscription != nil {
+			o.orchestrateOptions.onInterimTranscription(t.Transcript())
+		}
+		return
+	case triggers.TranscriptionTrigger:
+		if o.orchestrateOptions.onInterimTranscription != nil {
+			o.orchestrateOptions.onInterimTranscription("")
+		}
+		if o.orchestrateOptions.onTranscription != nil {
+			o.orchestrateOptions.onTranscription(t.Transcript())
+		}
+
+		trigger = triggers.NewTranscribedUserPromptTrigger(t.Transcript(), triggers.WithBase(t.BaseTrigger))
+	}
+
 	activeTurn := o.conversation.activeTurn
 	if activeTurn == nil {
 		o.queueTrigger(trigger)
@@ -30,11 +62,8 @@ func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
 
 	switch t := trigger.(type) {
 	case triggers.UserPromptTrigger:
-		prompt := t.Prompt
-		// TODO: Move this and note the change
-		if t.IsTranscribed && o.orchestrateOptions.onTranscription != nil {
-			o.orchestrateOptions.onTranscription(prompt)
-		}
+		// Just pass it through
+
 	case triggers.CallToolTrigger:
 		if t.Tool != nil {
 			// TODO: This response should be recorded somewhere, probably in the
