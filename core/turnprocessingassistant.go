@@ -14,17 +14,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type triggerQueueItem struct {
-	trigger  llms.TriggerV0
+type eventQueueItem struct {
+	event    llms.EventV0
 	queuedAt time.Time
 }
 
-func (o *Orchestrator) queueTrigger(trigger llms.TriggerV0) {
-	o.triggerQueue <- triggerQueueItem{trigger: trigger, queuedAt: time.Now()}
+func (o *Orchestrator) queueEvent(event llms.EventV0) {
+	o.eventQueue <- eventQueueItem{event: event, queuedAt: time.Now()}
 }
 
 func (o *Orchestrator) startAssistantLoop() {
-	for promptQueueItem := range o.triggerQueue {
+	for promptQueueItem := range o.eventQueue {
 		if o.conversation.activeTurn != nil {
 			o.promptEnded.Wait()
 		}
@@ -34,11 +34,11 @@ func (o *Orchestrator) startAssistantLoop() {
 		span.AddEvent("taken out of queue", trace.WithAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds())))
 		span.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
 
-		trigger := promptQueueItem.trigger
+		event := promptQueueItem.event
 
 		components := activeTurnComponents{
 			AudioOutput: o.audioOutput,
-			ResponseGenerator: func() (func(context.Context, llms.TriggerV0, []llms.TurnV1, *textBuffer) (*llms.Response, error), error) {
+			ResponseGenerator: func() (func(context.Context, llms.EventV0, []llms.TurnV1, *textBuffer) (*llms.Response, error), error) {
 				switch o.llm.(type) {
 				case LLMWithStream:
 					return o.processStreaming, nil
@@ -82,7 +82,7 @@ func (o *Orchestrator) startAssistantLoop() {
 					interruptionTypes = append(interruptionTypes, interruption.Type)
 				}
 				span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
-				span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", len(o.triggerQueue)))
+				span.SetAttributes(attribute.Int("assistant_turn.queued_events", len(o.eventQueue)))
 				activeTurnID := o.conversation.activeTurn.TurnV1.ID
 				if activeTurn := o.conversation.activeTurn; activeTurn != nil {
 					if activeTurn.TurnV1.ID != activeTurnID {
@@ -99,7 +99,7 @@ func (o *Orchestrator) startAssistantLoop() {
 				span.End()
 			},
 		}
-		if err := o.conversation.processActiveTurn(ctx, trigger, components, callbacks,
+		if err := o.conversation.processActiveTurn(ctx, event, components, callbacks,
 			activeTurnConfig{IsSpeaking: o.IsSpeaking},
 		); err != nil {
 			err := fmt.Errorf("failed to process active turn: %v", err)
@@ -112,12 +112,12 @@ func (o *Orchestrator) startAssistantLoop() {
 	}
 }
 
-func (o *Orchestrator) processPromptOld(ctx context.Context, trigger llms.TriggerV0, conversations []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
+func (o *Orchestrator) processPromptOld(ctx context.Context, event llms.EventV0, conversations []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
 	if o.llm.(LLMWithPrompt) == nil {
 		return nil, fmt.Errorf("LLM does not support prompting")
 	}
 
-	response, _ := o.llm.(LLMWithPrompt).Prompt(ctx, trigger.String(),
+	response, _ := o.llm.(LLMWithPrompt).Prompt(ctx, event.String(),
 		llms.WithTurnsV1(conversations...),
 		llms.WithTools(o.tools...),
 		llms.WithStream(buffer.AddChunk),
@@ -132,14 +132,14 @@ func (o *Orchestrator) processPromptOld(ctx context.Context, trigger llms.Trigge
 	return (*llms.Response)(&response[0]), nil
 }
 
-func (o *Orchestrator) processStreaming(ctx context.Context, trigger llms.TriggerV0, conversation []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
+func (o *Orchestrator) processStreaming(ctx context.Context, event llms.EventV0, conversation []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
 	span := trace.SpanFromContext(ctx)
 	if o.llm.(LLMWithStream) == nil {
 		return nil, fmt.Errorf("LLM does not support streaming")
 	}
 	llm := o.llm.(LLMWithStream)
 
-	turn := llms.TurnV1{Trigger: trigger}
+	turn := llms.TurnV1{Event: event}
 	for {
 		stream := llm.PromptWithStream(ctx, nil,
 			llms.WithTurnsV1(append(conversation, turn)...),

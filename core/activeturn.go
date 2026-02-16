@@ -37,7 +37,7 @@ type activeTurn struct {
 type activeTurnComponents struct {
 	TextToSpeechClient textToSpeech
 	AudioOutput        audioOutput
-	ResponseGenerator  func() (func(context.Context, llms.TriggerV0, []llms.TurnV1, *textBuffer) (*llms.Response, error), error)
+	ResponseGenerator  func() (func(context.Context, llms.EventV0, []llms.TurnV1, *textBuffer) (*llms.Response, error), error)
 }
 
 type activeTurnCallbacks struct {
@@ -80,11 +80,11 @@ type activeTurnConfig struct {
 	IsSpeaking bool
 }
 
-func newActiveTurn(ctx context.Context, trigger llms.TriggerV0, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) *activeTurn {
+func newActiveTurn(ctx context.Context, event llms.EventV0, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) *activeTurn {
 	activeTurn := &activeTurn{
 		TurnV1: llms.TurnV1{
-			ID:      uuid.NewString(),
-			Trigger: trigger,
+			ID:    uuid.NewString(),
+			Event: event,
 		},
 
 		ctx:         ctx,
@@ -164,7 +164,7 @@ func (t *activeTurn) generateResponse(ctx context.Context, conversation []llms.T
 	if err != nil {
 		return fmt.Errorf("failed to get response generator: %w", err)
 	}
-	response, err := generateResponse(ctx, t.Trigger, conversation, &t.textBuffer)
+	response, err := generateResponse(ctx, t.Event, conversation, &t.textBuffer)
 	if err != nil {
 		err := fmt.Errorf("failed to generate response: %w", err)
 		span.RecordError(err)

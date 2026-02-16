@@ -120,13 +120,13 @@ func (t *Conversation) updateInterruption(id int64, update func(*llms.Interrupti
 	}
 }
 
-func (t *Conversation) processActiveTurn(ctx context.Context, trigger llms.TriggerV0, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) error {
+func (t *Conversation) processActiveTurn(ctx context.Context, event llms.EventV0, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) error {
 	// TODO: active turn needs a mutex (not really but it would be nice)
 	if t.activeTurn != nil {
 		return fmt.Errorf("active turn already set")
 	}
 
-	activeTurn := newActiveTurn(ctx, trigger, components, callbacks, config)
+	activeTurn := newActiveTurn(ctx, event, components, callbacks, config)
 	t.activeTurn = activeTurn
 	ctx, cancel := context.WithCancel(ctx)
 	run := func(wg *sync.WaitGroup, f func() error) {

@@ -40,10 +40,10 @@ func toMessages(instructions string, turns []llms.TurnV1) []message {
 		})
 	}
 	for _, turn := range turns {
-		if turn.Trigger.String() != "" {
+		if turn.Event.String() != "" {
 			messages = append(messages, message{
 				Role:    messageRoleUser,
-				Content: turn.Trigger.String(),
+				Content: turn.Event.String(),
 			})
 		}
 

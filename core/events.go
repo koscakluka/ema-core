@@ -5,14 +5,14 @@ import (
 	"log"
 	"time"
 
+	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
-	"github.com/koscakluka/ema-core/core/triggers"
 	"go.opentelemetry.io/otel/trace"
 )
 
-func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
-	switch t := trigger.(type) {
-	case triggers.SpeechStartedTrigger:
+func (o *Orchestrator) respondToEvent(event llms.EventV0) {
+	switch t := event.(type) {
+	case events.SpeechStartedEvent:
 		// TODO: Consider pausing on speech start
 		// maybe with some wait time for interim transcript
 		// or maybe pausing on interim transcript is enough
@@ -20,19 +20,19 @@ func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
 			o.orchestrateOptions.onSpeakingStateChanged(true)
 		}
 		return
-	case triggers.SpeechEndedTrigger:
+	case events.SpeechEndedEvent:
 		if o.orchestrateOptions.onSpeakingStateChanged != nil {
 			o.orchestrateOptions.onSpeakingStateChanged(false)
 		}
 		return
-	case triggers.InterimTranscriptionTrigger:
+	case events.InterimTranscriptionEvent:
 		// TODO: Start generating interruption here already
 		// marking the ID will probably be required to keep track of it
 		if o.orchestrateOptions.onInterimTranscription != nil {
 			o.orchestrateOptions.onInterimTranscription(t.Transcript())
 		}
 		return
-	case triggers.TranscriptionTrigger:
+	case events.TranscriptionEvent:
 		if o.orchestrateOptions.onInterimTranscription != nil {
 			o.orchestrateOptions.onInterimTranscription("")
 		}
@@ -40,12 +40,12 @@ func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
 			o.orchestrateOptions.onTranscription(t.Transcript())
 		}
 
-		trigger = triggers.NewTranscribedUserPromptTrigger(t.Transcript(), triggers.WithBase(t.BaseTrigger))
+		event = events.NewTranscribedUserPromptEvent(t.Transcript(), events.WithBase(t.BaseEvent))
 	}
 
 	activeTurn := o.conversation.activeTurn
 	if activeTurn == nil {
-		o.queueTrigger(trigger)
+		o.queueEvent(event)
 		return
 	}
 
@@ -54,17 +54,17 @@ func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
 	interruptionID := time.Now().UnixNano()
 	if err := activeTurn.AddInterruption(llms.InterruptionV0{
 		ID:     interruptionID,
-		Source: trigger.String(),
+		Source: event.String(),
 	}); err != nil {
 		span.RecordError(err)
 		return
 	}
 
-	switch t := trigger.(type) {
-	case triggers.UserPromptTrigger:
+	switch t := event.(type) {
+	case events.UserPromptEvent:
 		// Just pass it through
 
-	case triggers.CallToolTrigger:
+	case events.CallToolEvent:
 		if t.Tool != nil {
 			// TODO: This response should be recorded somewhere, probably in the
 			// interruption, and might even warrant a response
@@ -82,7 +82,7 @@ func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
 		return
 
 	default:
-		span.RecordError(fmt.Errorf("skipped processing trigger of unknown type: %T", trigger))
+		span.RecordError(fmt.Errorf("skipped processing event of unknown type: %T", event))
 		return
 	}
 
@@ -107,7 +107,7 @@ func (o *Orchestrator) respondToTrigger(trigger llms.TriggerV0) {
 			return
 		}
 	} else if o.interruptionHandlerV0 != nil {
-		if err := o.interruptionHandlerV0.HandleV0(trigger.String(), llms.ToTurnsV0FromV1(o.conversation.turns), o.tools, o); err != nil {
+		if err := o.interruptionHandlerV0.HandleV0(event.String(), llms.ToTurnsV0FromV1(o.conversation.turns), o.tools, o); err != nil {
 			log.Printf("Failed to handle interruption: %v", err)
 		} else {
 			o.conversation.updateInterruption(interruptionID, func(interruption *llms.InterruptionV0) {

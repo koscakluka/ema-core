@@ -8,8 +8,8 @@ import (
 	"log"
 
 	emaContext "github.com/koscakluka/ema-core/core/context"
+	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
-	"github.com/koscakluka/ema-core/core/triggers"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -19,8 +19,8 @@ type Orchestrator struct {
 
 	conversation Conversation
 
-	triggerQueue chan triggerQueueItem
-	promptEnded  sync.WaitGroup
+	eventQueue  chan eventQueueItem
+	promptEnded sync.WaitGroup
 
 	tools []llms.Tool
 
@@ -41,11 +41,11 @@ type Orchestrator struct {
 
 func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 	o := &Orchestrator{
-		IsRecording:  false,
-		IsSpeaking:   false,
-		triggerQueue: make(chan triggerQueueItem, 10), // TODO: Figure out good valiues for this
-		config:       &Config{AlwaysRecording: true},
-		baseContext:  context.Background(),
+		IsRecording: false,
+		IsSpeaking:  false,
+		eventQueue:  make(chan eventQueueItem, 10), // TODO: Figure out good valiues for this
+		config:      &Config{AlwaysRecording: true},
+		baseContext: context.Background(),
 	}
 
 	for _, opt := range opts {
@@ -58,7 +58,7 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 func (o *Orchestrator) Close() {
 	// TODO: Make sure that deepgramClient is closed and no longer transcribing
 	// before closing the channel
-	close(o.triggerQueue)
+	close(o.eventQueue)
 	if activeTurn := o.conversation.activeTurn; activeTurn != nil {
 		trace.SpanFromContext(activeTurn.ctx).End()
 	}
@@ -83,22 +83,22 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 }
 
 func (o *Orchestrator) SendPrompt(prompt string) {
-	o.respondToTrigger(triggers.NewUserPromptTrigger(prompt))
+	o.respondToEvent(events.NewUserPromptEvent(prompt))
 }
 
 func (o *Orchestrator) SendAudio(audio []byte) error {
 	return o.sendAudio(audio)
 }
 
-func (o *Orchestrator) Trigger(trigger llms.TriggerV0) {
-	o.respondToTrigger(trigger)
+func (o *Orchestrator) Handle(event llms.EventV0) {
+	o.respondToEvent(event)
 }
 
 // QueuePrompt immediately queues the prompt for processing after the current
 // turn is finished. It bypasses the normal processing pipeline and can be useful
 // for handling prompts that are sure to follow up after the current turn.
 func (o *Orchestrator) QueuePrompt(prompt string) {
-	go o.queueTrigger(triggers.NewUserPromptTrigger(prompt))
+	go o.queueEvent(events.NewUserPromptEvent(prompt))
 }
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
@@ -159,11 +159,11 @@ func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
 	defer span.End()
 	switch o.llm.(type) {
 	case LLMWithStream:
-		_, err := o.processStreaming(ctx, triggers.NewUserPromptTrigger(prompt), o.conversation.turns, newTextBuffer())
+		_, err := o.processStreaming(ctx, events.NewUserPromptEvent(prompt), o.conversation.turns, newTextBuffer())
 		return err
 
 	case LLMWithPrompt:
-		_, err := o.processPromptOld(ctx, triggers.NewUserPromptTrigger(prompt), o.conversation.turns, newTextBuffer())
+		_, err := o.processPromptOld(ctx, events.NewUserPromptEvent(prompt), o.conversation.turns, newTextBuffer())
 		return err
 
 	default:

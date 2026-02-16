@@ -50,9 +50,9 @@ type Turn struct {
 
 type TurnV1 struct {
 	ID string
-	// Trigger is what initiated the turn, e.g. a user message, notification,
+	// Event is what initiated the turn, e.g. a user message, notification,
 	// completed tool call, etc.
-	Trigger TriggerV0
+	Event EventV0
 
 	// Responses is a list of responses that the assistant has generated for
 	// the turn. The assistant may generate multiple responses for a single
@@ -88,7 +88,7 @@ func (t *TurnV1) HasAssistantPart() bool {
 	return len(t.Responses) > 0 || len(t.ToolCalls) > 0 || len(t.Interruptions) > 0
 }
 
-type TriggerV0 interface {
+type EventV0 interface {
 	fmt.Stringer
 }
 

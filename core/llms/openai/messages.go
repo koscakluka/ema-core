@@ -47,7 +47,7 @@ func toOpenAIMessages(instructions string, turns []llms.TurnV1) []openAIMessage 
 		messages = append(messages, openAIMessage{
 			Type:    messageTypeMessage,
 			Role:    messageRoleUser,
-			Content: turn.Trigger.String(),
+			Content: turn.Event.String(),
 		})
 
 		if len(turn.ToolCalls) > 0 {

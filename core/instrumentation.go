@@ -12,4 +12,3 @@ var (
 	meter  = otel.Meter(scopeName)
 	logger = otelslog.NewLogger(scopeName)
 )
-
