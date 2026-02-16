@@ -92,14 +92,6 @@ type TriggerV0 interface {
 	fmt.Stringer
 }
 
-type UserPromptTrigger struct {
-	Prompt string
-}
-
-func (t UserPromptTrigger) String() string {
-	return t.Prompt
-}
-
 type TurnResponseV0 struct {
 	Message        string
 	TypedMessage   string

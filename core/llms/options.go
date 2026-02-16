@@ -312,6 +312,14 @@ func ToTurns(messages []Message) []Turn {
 	return turns
 }
 
+type userPromptTrigger struct {
+	Prompt string
+}
+
+func (t userPromptTrigger) String() string {
+	return t.Prompt
+}
+
 func ToTurnsV1FromV0(turns []Turn) []TurnV1 {
 	turnsV1 := []TurnV1{}
 	var turnV1 *TurnV1
@@ -322,7 +330,7 @@ func ToTurnsV1FromV0(turns []Turn) []TurnV1 {
 				turnsV1 = append(turnsV1, *turnV1)
 			}
 			turnV1 = &TurnV1{
-				Trigger: UserPromptTrigger{Prompt: turn.Content},
+				Trigger: userPromptTrigger{Prompt: turn.Content},
 			}
 		case TurnRoleAssistant:
 			turnV1.Interruptions = append(turnV1.Interruptions, turn.Interruptions...)
