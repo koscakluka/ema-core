@@ -8,6 +8,23 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v0.0.16] - 2026-02-16
+
+### Added
+
+- `core/events` package with typed orchestration event types for prompts, speech,
+  transcriptions, and tool calls
+- `core/Orchestrator.Handle` method for submitting custom orchestration events
+- `core/WithInputAudioCallback` orchestrate option for observing raw input audio
+  chunks
+
+### Changed
+
+- Speech and transcription processing now flow through event handling, so voice
+  and text interruptions follow the same path as direct prompt/tool events
+- Prompt/tool history serialization for Groq and OpenAI now reads from
+  `TurnV1.Event`
+
 ## [v0.0.15] - 2026-02-07
 
 ### Added
@@ -164,7 +181,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [v0.0.12] - 2025-11-05
 
-[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.15...HEAD
+[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.16...HEAD
+[v0.0.16]: https://github.com/koscakluka/ema-core/compare/v0.0.15...v0.0.16
 [v0.0.15]: https://github.com/koscakluka/ema-core/compare/v0.0.14...v0.0.15
 [v0.0.14]: https://github.com/koscakluka/ema-core/compare/v0.0.13...v0.0.14
 [v0.0.13]: https://github.com/koscakluka/ema-core/compare/v0.0.12...v0.0.13
