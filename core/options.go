@@ -120,7 +120,7 @@ type InterruptionHandlerV0 interface {
 
 func WithInterruptionHandlerV0(handler InterruptionHandlerV0) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.interruptionHandlerV0 = handler
+		o.eventHandler.interruptionHandlerV0 = handler
 	}
 }
 
@@ -130,7 +130,7 @@ type InterruptionHandlerV1 interface {
 
 func WithInterruptionHandlerV1(handler InterruptionHandlerV1) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.interruptionHandlerV1 = handler
+		o.eventHandler.interruptionHandlerV1 = handler
 	}
 }
 
@@ -140,7 +140,7 @@ type InterruptionHandlerV2 interface {
 
 func WithInterruptionHandlerV2(handler InterruptionHandlerV2) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.interruptionHandlerV2 = handler
+		o.eventHandler.interruptionHandlerV2 = handler
 	}
 }
 
