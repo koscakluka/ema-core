@@ -52,6 +52,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   errors
 - active turn finalization now closes legacy TTS streams reliably (with
   idempotent close handling) and records close failures on turn spans
+- OpenAI turn-history serialization now preserves turns after tool-call turns,
+  preventing conversation context truncation in follow-up requests
 
 ## [v0.0.16] - 2026-02-16
 

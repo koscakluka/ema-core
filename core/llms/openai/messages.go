@@ -67,7 +67,6 @@ func toOpenAIMessages(instructions string, turns []llms.TurnV1) []openAIMessage 
 					})
 				}
 			}
-			return messages
 		}
 		for _, response := range turn.Responses {
 			if !response.IsCompleted() {
