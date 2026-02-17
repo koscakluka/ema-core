@@ -45,7 +45,7 @@ func (o *Orchestrator) Cancel() {
 //
 // Deprecated: (since v0.0.13) use Turns instead
 func (o *Orchestrator) Messages() []llms.Message {
-	return llms.ToMessages(llms.ToTurnsV0FromV1(o.conversation.turns))
+	return llms.ToMessages(llms.ToTurnsV0FromV1(o.conversation.historySnapshot()))
 }
 
 // Turns return llm Turns
@@ -69,7 +69,7 @@ type turns struct {
 //
 // Deprecated: (since v0.0.15) use Conversation instead
 func (t *turns) Push(turn llms.Turn) {
-	t.conversation.turns = append(t.conversation.turns, llms.ToTurnsV1FromV0([]llms.Turn{turn})...)
+	t.conversation.appendTurns(llms.ToTurnsV1FromV0([]llms.Turn{turn})...)
 }
 
 func (t *turns) Pop() *llms.Turn {

@@ -14,8 +14,8 @@ import (
 
 func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 	ctx := o.baseContext
-	if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-		ctx = activeTurn.ctx
+	if activeTurnCtx := o.conversation.activeTurnContext(); activeTurnCtx != nil {
+		ctx = activeTurnCtx
 	}
 
 	switch t := event.(type) {
@@ -46,8 +46,8 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 	}) {
 		if err != nil {
 			var span trace.Span
-			if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-				span = trace.SpanFromContext(activeTurn.ctx)
+			if activeTurnCtx := o.conversation.activeTurnContext(); activeTurnCtx != nil {
+				span = trace.SpanFromContext(activeTurnCtx)
 			} else {
 				span = trace.SpanFromContext(o.baseContext)
 			}
@@ -69,9 +69,7 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 		case events.CancelTurnEvent:
 			o.CancelTurn()
 		case events.RecordInterruptionEvent:
-			if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-				activeTurn.Interruptions = append(activeTurn.Interruptions, t.Interruption)
-			}
+			o.conversation.addInterruptionToActiveTurn(t.Interruption)
 		case events.ResolveInterruptionEvent:
 			o.conversation.updateInterruption(t.ID, func(update *llms.InterruptionV0) {
 				update.Type = t.Type
@@ -104,16 +102,14 @@ func (c *orchestratorActiveContext) History() []llms.TurnV1 {
 	if c == nil || c.conversation == nil {
 		return nil
 	}
-	history := make([]llms.TurnV1, len(c.conversation.turns))
-	copy(history, c.conversation.turns)
-	return history
+	return c.conversation.historySnapshot()
 }
 
 func (c *orchestratorActiveContext) ActiveTurn() *llms.TurnV1 {
-	if c == nil || c.conversation == nil || c.conversation.activeTurn == nil {
+	if c == nil || c.conversation == nil {
 		return nil
 	}
-	return &c.conversation.activeTurn.TurnV1
+	return c.conversation.activeTurnSnapshot()
 }
 
 func (c *orchestratorActiveContext) AvailableTools() []llms.Tool {

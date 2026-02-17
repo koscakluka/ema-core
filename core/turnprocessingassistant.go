@@ -114,25 +114,6 @@ func (o *Orchestrator) startAssistantLoop() {
 						}
 						span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
 						span.SetAttributes(attribute.Int("assistant_turn.queued_events", len(o.eventQueue)))
-
-						if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-							if activeTurn.TurnV1.ID != finalisedTurn.TurnV1.ID {
-								err := fmt.Errorf("turn IDs do not match")
-								span.RecordError(err)
-								span.SetStatus(codes.Error, err.Error())
-								o.conversation.turns = append(o.conversation.turns, finalisedTurn.TurnV1)
-								return
-							}
-
-							o.conversation.turns = append(o.conversation.turns, finalisedTurn.TurnV1)
-							o.conversation.activeTurn = nil
-							return
-						}
-
-						err := fmt.Errorf("active turn missing during finalisation")
-						span.RecordError(err)
-						span.SetStatus(codes.Error, err.Error())
-						o.conversation.turns = append(o.conversation.turns, finalisedTurn.TurnV1)
 					},
 				}
 				if err := o.conversation.processActiveTurn(ctx, event, components, callbacks,
@@ -197,8 +178,7 @@ func (o *Orchestrator) processStreaming(ctx context.Context, event llms.EventV0,
 				return nil, err
 			}
 
-			activeTurn := o.conversation.activeTurn
-			if activeTurn != nil && activeTurn.IsCancelled() {
+			if o.conversation.activeTurnCancelled() {
 				// TODO: This is probably not the best way to handle this,
 				// returning something would make more sense
 				return nil, nil

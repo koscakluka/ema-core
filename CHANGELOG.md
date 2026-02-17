@@ -54,6 +54,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   idempotent close handling) and records close failures on turn spans
 - OpenAI turn-history serialization now preserves turns after tool-call turns,
   preventing conversation context truncation in follow-up requests
+- conversation state access and active-turn lifecycle finalization now run through
+  synchronized conversation-owned helpers, reducing race-prone direct mutation
+  from assistant-loop callbacks and control paths
 
 ## [v0.0.16] - 2026-02-16
 

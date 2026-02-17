@@ -144,7 +144,6 @@ func (t *activeTurn) Finalise() {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
-	t.callbacks.OnFinalise(t)
 }
 
 func (t *activeTurn) Cancel() {

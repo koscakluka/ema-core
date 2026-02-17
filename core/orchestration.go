@@ -75,9 +75,7 @@ func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
 		close(o.closeCh)
 
-		if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-			activeTurn.Cancel()
-		}
+		o.conversation.cancelActiveTurn()
 
 		if err := o.stopCapture(); err != nil {
 			recordedErr := fmt.Errorf("failed to stop audio capture: %w", err)
@@ -172,8 +170,8 @@ func (o *Orchestrator) isClosed() bool {
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
 	o.IsSpeaking = isSpeaking
-	if activeTurn := o.conversation.activeTurn; activeTurn != nil && !isSpeaking {
-		activeTurn.StopSpeaking()
+	if !isSpeaking {
+		o.conversation.stopSpeakingActiveTurn()
 	}
 	if o.audioOutput != nil {
 		o.audioOutput.ClearBuffer()
@@ -232,13 +230,15 @@ func (o *Orchestrator) ConversationV0() emaContext.ConversationV0 {
 func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
 	ctx, span := tracer.Start(ctx, "call tool with prompt")
 	defer span.End()
+	history := o.conversation.historySnapshot()
+
 	switch o.llm.(type) {
 	case LLMWithStream:
-		_, err := o.processStreaming(ctx, events.NewUserPromptEvent(prompt), o.conversation.turns, newTextBuffer())
+		_, err := o.processStreaming(ctx, events.NewUserPromptEvent(prompt), history, newTextBuffer())
 		return err
 
 	case LLMWithPrompt:
-		_, err := o.processPromptOld(ctx, events.NewUserPromptEvent(prompt), o.conversation.turns, newTextBuffer())
+		_, err := o.processPromptOld(ctx, events.NewUserPromptEvent(prompt), history, newTextBuffer())
 		return err
 
 	default:

@@ -3,8 +3,7 @@ package orchestration
 func (o *Orchestrator) CancelTurn() {
 	// TODO: This could potentially be done directly on the turn instead of
 	// as an exposed method
-	if activeTurn := o.conversation.activeTurn; activeTurn != nil && !activeTurn.IsCancelled() {
-		activeTurn.Cancel()
+	if o.conversation.cancelActiveTurn() {
 		if o.orchestrateOptions.onCancellation != nil {
 			o.orchestrateOptions.onCancellation()
 		}
@@ -16,13 +15,9 @@ func (o *Orchestrator) PauseTurn() {
 	if o.audioOutput != nil {
 		o.audioOutput.ClearBuffer()
 	}
-	if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-		activeTurn.Pause()
-	}
+	o.conversation.pauseActiveTurn()
 }
 
 func (o *Orchestrator) UnpauseTurn() {
-	if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-		activeTurn.Unpause()
-	}
+	o.conversation.unpauseActiveTurn()
 }
