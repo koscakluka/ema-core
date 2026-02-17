@@ -118,15 +118,19 @@ func (o *Orchestrator) startAssistantLoop() {
 }
 
 func (o *Orchestrator) processPromptOld(ctx context.Context, event llms.EventV0, conversations []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
-	if o.llm.(LLMWithPrompt) == nil {
+	llm, ok := o.llm.(LLMWithPrompt)
+	if !ok {
 		return nil, fmt.Errorf("LLM does not support prompting")
 	}
 
-	response, _ := o.llm.(LLMWithPrompt).Prompt(ctx, event.String(),
+	response, err := llm.Prompt(ctx, event.String(),
 		llms.WithTurnsV1(conversations...),
 		llms.WithTools(o.tools...),
 		llms.WithStream(buffer.AddChunk),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prompt llm: %w", err)
+	}
 
 	if len(response) == 0 {
 		log.Println("Warning: no turns returned for assistants turn")
@@ -139,10 +143,10 @@ func (o *Orchestrator) processPromptOld(ctx context.Context, event llms.EventV0,
 
 func (o *Orchestrator) processStreaming(ctx context.Context, event llms.EventV0, conversation []llms.TurnV1, buffer *textBuffer) (*llms.Response, error) {
 	span := trace.SpanFromContext(ctx)
-	if o.llm.(LLMWithStream) == nil {
+	llm, ok := o.llm.(LLMWithStream)
+	if !ok {
 		return nil, fmt.Errorf("LLM does not support streaming")
 	}
-	llm := o.llm.(LLMWithStream)
 
 	turn := llms.TurnV1{Event: event}
 	for {
@@ -155,9 +159,10 @@ func (o *Orchestrator) processStreaming(ctx context.Context, event llms.EventV0,
 		toolCalls := []llms.ToolCall{}
 		for chunk, err := range stream.Chunks(ctx) {
 			if err != nil {
-				// TODO: handle error
+				err = fmt.Errorf("failed to stream llm response: %w", err)
 				span.RecordError(err)
-				break
+				span.SetStatus(codes.Error, err.Error())
+				return nil, err
 			}
 
 			activeTurn := o.conversation.activeTurn
@@ -184,7 +189,13 @@ func (o *Orchestrator) processStreaming(ctx context.Context, event llms.EventV0,
 		}
 
 		for _, toolCall := range toolCalls {
-			toolResponse, _ := o.callTool(ctx, toolCall)
+			toolResponse, err := o.callTool(ctx, toolCall)
+			if err != nil {
+				err = fmt.Errorf("failed to call tool: %w", err)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return nil, err
+			}
 			if toolResponse != nil {
 				toolCall.Response = toolResponse.Response
 			}
@@ -217,7 +228,10 @@ func (o *Orchestrator) callTool(ctx context.Context, toolCall llms.ToolCall) (*l
 		if tool.Function.Name == toolName {
 			resp, err := tool.Execute(toolArguments)
 			if err != nil {
-				log.Println("Error executing tool:", err)
+				err = fmt.Errorf("failed to execute tool %q: %w", toolName, err)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return nil, err
 			}
 			return &llms.ToolCall{
 				ID:       toolCall.ID,
@@ -226,5 +240,8 @@ func (o *Orchestrator) callTool(ctx context.Context, toolCall llms.ToolCall) (*l
 		}
 	}
 
-	return nil, fmt.Errorf("tool not found")
+	err := fmt.Errorf("tool not found: %s", toolName)
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+	return nil, err
 }

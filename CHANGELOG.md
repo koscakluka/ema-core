@@ -42,6 +42,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   processors (including panic recovery) and propagated after safe finalization
 - assistant queue processing now relies on single-consumer sequencing instead of
   redundant per-turn waitgroup gating, avoiding fragile turn-finalize coupling
+- prompt, stream, tool, and interruption-classifier failures in orchestration
+  now propagate as explicit errors instead of being silently ignored
 
 ## [v0.0.16] - 2026-02-16
 

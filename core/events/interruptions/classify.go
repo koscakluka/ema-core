@@ -54,10 +54,13 @@ func classify(ctx context.Context, interruption llms.InterruptionV0, llm LLM, op
 			systemPrompt += fmt.Sprintf("- %s: %s", tool.Function.Name, tool.Function.Description)
 		}
 
-		response, _ := llm.(LLMWithGeneralPrompt).Prompt(ctx, interruption.Source,
+		response, err := llm.(LLMWithGeneralPrompt).Prompt(ctx, interruption.Source,
 			llms.WithSystemPrompt(systemPrompt),
 			llms.WithTurnsV1(options.History...),
 		)
+		if err != nil {
+			return &interruption, fmt.Errorf("failed to prompt interruption classifier: %w", err)
+		}
 
 		if len(response.Content) == 0 {
 			return nil, fmt.Errorf("no response from interruption classifier")
