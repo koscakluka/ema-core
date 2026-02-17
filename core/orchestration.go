@@ -11,6 +11,8 @@ import (
 	emaContext "github.com/koscakluka/ema-core/core/context"
 	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Orchestrator struct {
@@ -78,7 +80,10 @@ func (o *Orchestrator) Close() {
 		}
 
 		if err := o.stopCapture(); err != nil {
-			log.Printf("Failed to stop audio capture: %v", err)
+			recordedErr := fmt.Errorf("failed to stop audio capture: %w", err)
+			span := trace.SpanFromContext(o.baseContext)
+			span.RecordError(recordedErr)
+			span.SetStatus(codes.Error, recordedErr.Error())
 		}
 		if o.audioInput != nil {
 			o.audioInput.Close()
@@ -87,7 +92,10 @@ func (o *Orchestrator) Close() {
 		switch c := o.speechToTextClient.(type) {
 		case interface{ Close() error }:
 			if err := c.Close(); err != nil {
-				log.Printf("Failed to close speech-to-text client: %v", err)
+				recordedErr := fmt.Errorf("failed to close speech-to-text client: %w", err)
+				span := trace.SpanFromContext(o.baseContext)
+				span.RecordError(recordedErr)
+				span.SetStatus(codes.Error, recordedErr.Error())
 			}
 		case interface{ Close() }:
 			c.Close()
@@ -125,7 +133,12 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 		}()
 	})
 
-	o.initSST()
+	if err := o.initSST(); err != nil {
+		recordedErr := fmt.Errorf("failed to initialize speech-to-text: %w", err)
+		span := trace.SpanFromContext(o.baseContext)
+		span.RecordError(recordedErr)
+		span.SetStatus(codes.Error, recordedErr.Error())
+	}
 	o.initAudioInput()
 }
 
@@ -177,12 +190,18 @@ func (o *Orchestrator) SetAlwaysRecording(isAlwaysRecording bool) {
 	if isAlwaysRecording {
 		go func() {
 			if err := o.startCapture(); err != nil {
-				log.Printf("Failed to start audio input: %v", err)
+				recordedErr := fmt.Errorf("failed to start audio input: %w", err)
+				span := trace.SpanFromContext(o.baseContext)
+				span.RecordError(recordedErr)
+				span.SetStatus(codes.Error, recordedErr.Error())
 			}
 		}()
 	} else if !o.IsRecording {
 		if err := o.stopCapture(); err != nil {
-			log.Printf("Failed to stop audio input: %v", err)
+			recordedErr := fmt.Errorf("failed to stop audio input: %w", err)
+			span := trace.SpanFromContext(o.baseContext)
+			span.RecordError(recordedErr)
+			span.SetStatus(codes.Error, recordedErr.Error())
 		}
 	}
 }

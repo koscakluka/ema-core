@@ -3,7 +3,6 @@ package miniaudio
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/gen2brain/malgo"
 	"github.com/koscakluka/ema-core/core/audio"
@@ -24,7 +23,7 @@ func NewClient() (*Client, error) {
 		func(message string) {}, //log.Println("malgo:", message) },
 	)
 	if err != nil {
-		log.Fatalf("malgo InitContext failed: %v", err)
+		return nil, fmt.Errorf("failed to initialize malgo context: %w", err)
 	}
 
 	client := Client{

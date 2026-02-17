@@ -47,6 +47,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - orchestrator shutdown is now idempotent and safe under concurrent activity:
   queueing is rejected after close, active turns are cancelled, and the assistant
   loop exits through an explicit close signal without channel-close panics
+- orchestrator and audio client startup no longer abort the process via
+  `log.Fatalf`; initialization failures are now returned/logged as recoverable
+  errors
 
 ## [v0.0.16] - 2026-02-16
 

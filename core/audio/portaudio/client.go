@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"log"
 
 	"github.com/gordonklaus/portaudio"
@@ -22,15 +23,15 @@ type Client struct {
 func NewClient(bufferSize int) (*Client, error) {
 	err := portaudio.Initialize()
 	if err != nil {
-		log.Fatalf("Failed to initialize PortAudio: %v", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to initialize portaudio: %w", err)
 	}
 
 	in := make([]int16, bufferSize)
 	out := make([]int16, bufferSize)
 	stream, err := portaudio.OpenDefaultStream(1, 1, audio.DefaultSampleRate, bufferSize, in, out)
 	if err != nil {
-		log.Fatalf("Failed to open PortAudio stream: %v", err)
+		_ = portaudio.Terminate()
+		return nil, fmt.Errorf("failed to open portaudio stream: %w", err)
 	}
 
 	return &Client{
@@ -44,7 +45,7 @@ func NewClient(bufferSize int) (*Client, error) {
 func (c *Client) Stream(ctx context.Context, onAudio func(audio []byte)) error {
 	log.Println("Starting microphone capture. Speak now...")
 	if err := c.stream.Start(); err != nil {
-		log.Fatalf("Failed to start PortAudio stream: %v", err)
+		return fmt.Errorf("failed to start portaudio stream: %w", err)
 	}
 
 	for {
