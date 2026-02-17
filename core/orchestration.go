@@ -249,6 +249,10 @@ func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
 
 }
 
+func (o *Orchestrator) CancelTurn()  { o.conversation.cancelActiveTurn() }
+func (o *Orchestrator) PauseTurn()   { o.conversation.pauseActiveTurn() }
+func (o *Orchestrator) UnpauseTurn() { o.conversation.unpauseActiveTurn() }
+
 func (o *Orchestrator) initSTT() error {
 	if o.speechToTextClient == nil {
 		return nil

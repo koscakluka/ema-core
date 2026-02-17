@@ -115,6 +115,11 @@ func (o *Orchestrator) startAssistantLoop() {
 						span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
 						span.SetAttributes(attribute.Int("assistant_turn.queued_events", len(o.eventQueue)))
 					},
+					OnCancel: func() {
+						if o.orchestrateOptions.onCancellation != nil {
+							o.orchestrateOptions.onCancellation()
+						}
+					},
 				}
 				if err := o.conversation.processActiveTurn(ctx, event, components, callbacks,
 					activeTurnConfig{IsSpeaking: o.IsSpeaking},

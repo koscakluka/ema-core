@@ -47,6 +47,7 @@ type activeTurnCallbacks struct {
 	OnResponseSpeech    func([]byte)
 	OnResponseSpeechEnd func(string)
 	OnFinalise          func(*activeTurn)
+	OnCancel            func()
 }
 
 func (c *activeTurnCallbacks) defaults() *activeTurnCallbacks {
@@ -55,6 +56,7 @@ func (c *activeTurnCallbacks) defaults() *activeTurnCallbacks {
 	c.OnResponseSpeech = func([]byte) {}
 	c.OnResponseSpeechEnd = func(string) {}
 	c.OnFinalise = func(*activeTurn) {}
+	c.OnCancel = func() {}
 	return c
 }
 
@@ -73,6 +75,9 @@ func (c *activeTurnCallbacks) with(callbacks activeTurnCallbacks) *activeTurnCal
 	}
 	if callbacks.OnResponseSpeechEnd != nil {
 		c.OnResponseSpeechEnd = callbacks.OnResponseSpeechEnd
+	}
+	if callbacks.OnCancel != nil {
+		c.OnCancel = callbacks.OnCancel
 	}
 	return c
 }
@@ -123,6 +128,7 @@ func (t *activeTurn) StopSpeaking() {
 
 func (t *activeTurn) Pause() {
 	t.audioBuffer.Pause()
+	t.audioOut.Clear()
 }
 
 func (t *activeTurn) Unpause() {
@@ -159,6 +165,7 @@ func (t *activeTurn) Cancel() {
 	}
 	t.audioBuffer.Stop()
 	t.audioOut.Clear()
+	t.callbacks.OnCancel()
 }
 
 func (t *activeTurn) IsCancelled() bool {
