@@ -25,90 +25,95 @@ func (o *Orchestrator) queueEvent(event llms.EventV0) {
 
 func (o *Orchestrator) startAssistantLoop() {
 	for promptQueueItem := range o.eventQueue {
-		if o.conversation.activeTurn != nil {
-			o.promptEnded.Wait()
-		}
-		o.promptEnded.Add(1)
+		// NOTE: This loop is a single queue consumer, so turns are already
+		// processed sequentially without extra synchronization.
+		func(promptQueueItem eventQueueItem) {
+			ctx, span := tracer.Start(o.baseContext, "process turn")
+			defer span.End()
 
-		ctx, span := tracer.Start(o.baseContext, "process turn")
-		span.AddEvent("taken out of queue", trace.WithAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds())))
-		span.SetAttributes(attribute.Float64("assistant_turn.queued_time", time.Since(promptQueueItem.queuedAt).Seconds()))
+			queuedTime := time.Since(promptQueueItem.queuedAt).Seconds()
+			span.AddEvent("taken out of queue", trace.WithAttributes(attribute.Float64("assistant_turn.queued_time", queuedTime)))
+			span.SetAttributes(attribute.Float64("assistant_turn.queued_time", queuedTime))
 
-		event := promptQueueItem.event
+			event := promptQueueItem.event
 
-		components := activeTurnComponents{
-			AudioOutput: o.audioOutput,
-			ResponseGenerator: func() (func(context.Context, llms.EventV0, []llms.TurnV1, *textBuffer) (*llms.Response, error), error) {
-				switch o.llm.(type) {
-				case LLMWithStream:
-					return o.processStreaming, nil
+			components := activeTurnComponents{
+				AudioOutput: o.audioOutput,
+				ResponseGenerator: func() (func(context.Context, llms.EventV0, []llms.TurnV1, *textBuffer) (*llms.Response, error), error) {
+					switch o.llm.(type) {
+					case LLMWithStream:
+						return o.processStreaming, nil
 
-				// TODO: Implement this
-				// case LLMWithGeneralPrompt:
-				case LLMWithPrompt:
-					return o.processPromptOld, nil
-				default:
-					// Impossible state
-					return nil, fmt.Errorf("unknown LLM type")
-				}
-			},
-			TextToSpeechClient: o.textToSpeechClient,
-		}
-		callbacks := activeTurnCallbacks{ // TODO: See if these can be moved somewhere else and generalized, this could probably be moved to the top of the function
-			OnResponseText: func(response string) {
-				if o.orchestrateOptions.onResponse != nil {
-					o.orchestrateOptions.onResponse(response)
-				}
-			},
-			OnResponseTextEnd: func() {
-				if o.orchestrateOptions.onResponseEnd != nil {
-					o.orchestrateOptions.onResponseEnd()
-				}
-			},
-			OnResponseSpeech: func(audio []byte) {
-				if o.orchestrateOptions.onAudio != nil {
-					o.orchestrateOptions.onAudio(audio)
-				}
-			},
-			OnResponseSpeechEnd: func(transcript string) {
-				if o.orchestrateOptions.onAudioEnded != nil {
-					o.orchestrateOptions.onAudioEnded(transcript)
-				}
-			},
-			OnFinalise: func(activeTurn *activeTurn) {
-				span := trace.SpanFromContext(activeTurn.ctx)
-				interruptionTypes := []string{}
-				for _, interruption := range activeTurn.Interruptions {
-					interruptionTypes = append(interruptionTypes, interruption.Type)
-				}
-				span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
-				span.SetAttributes(attribute.Int("assistant_turn.queued_events", len(o.eventQueue)))
-				activeTurnID := o.conversation.activeTurn.TurnV1.ID
-				if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-					if activeTurn.TurnV1.ID != activeTurnID {
-						// NOTE: This should never happen, but we want to know
-						// if it does
-						span.RecordError(fmt.Errorf("turn IDs do not match"))
-						span.SetStatus(codes.Error, "turn IDs do not match")
-					} else {
-						o.conversation.turns = append(o.conversation.turns, activeTurn.TurnV1)
-						o.conversation.activeTurn = nil
-						o.promptEnded.Done()
+					// TODO: Implement this
+					// case LLMWithGeneralPrompt:
+					case LLMWithPrompt:
+						return o.processPromptOld, nil
+					default:
+						// Impossible state
+						return nil, fmt.Errorf("unknown LLM type")
 					}
-				}
-				span.End()
-			},
-		}
-		if err := o.conversation.processActiveTurn(ctx, event, components, callbacks,
-			activeTurnConfig{IsSpeaking: o.IsSpeaking},
-		); err != nil {
-			err := fmt.Errorf("failed to process active turn: %v", err)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			// TODO: Probably should be able to requeue the prompt or something
-			// here
-		}
+				},
+				TextToSpeechClient: o.textToSpeechClient,
+			}
+			callbacks := activeTurnCallbacks{ // TODO: See if these can be moved somewhere else and generalized, this could probably be moved to the top of the function
+				OnResponseText: func(response string) {
+					if o.orchestrateOptions.onResponse != nil {
+						o.orchestrateOptions.onResponse(response)
+					}
+				},
+				OnResponseTextEnd: func() {
+					if o.orchestrateOptions.onResponseEnd != nil {
+						o.orchestrateOptions.onResponseEnd()
+					}
+				},
+				OnResponseSpeech: func(audio []byte) {
+					if o.orchestrateOptions.onAudio != nil {
+						o.orchestrateOptions.onAudio(audio)
+					}
+				},
+				OnResponseSpeechEnd: func(transcript string) {
+					if o.orchestrateOptions.onAudioEnded != nil {
+						o.orchestrateOptions.onAudioEnded(transcript)
+					}
+				},
+				OnFinalise: func(finalisedTurn *activeTurn) {
+					interruptionTypes := []string{}
+					for _, interruption := range finalisedTurn.Interruptions {
+						interruptionTypes = append(interruptionTypes, interruption.Type)
+					}
+					span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
+					span.SetAttributes(attribute.Int("assistant_turn.queued_events", len(o.eventQueue)))
 
+					if activeTurn := o.conversation.activeTurn; activeTurn != nil {
+						if activeTurn.TurnV1.ID != finalisedTurn.TurnV1.ID {
+							err := fmt.Errorf("turn IDs do not match")
+							span.RecordError(err)
+							span.SetStatus(codes.Error, err.Error())
+							o.conversation.turns = append(o.conversation.turns, finalisedTurn.TurnV1)
+							return
+						}
+
+						o.conversation.turns = append(o.conversation.turns, finalisedTurn.TurnV1)
+						o.conversation.activeTurn = nil
+						return
+					}
+
+					err := fmt.Errorf("active turn missing during finalisation")
+					span.RecordError(err)
+					span.SetStatus(codes.Error, err.Error())
+					o.conversation.turns = append(o.conversation.turns, finalisedTurn.TurnV1)
+				},
+			}
+			if err := o.conversation.processActiveTurn(ctx, event, components, callbacks,
+				activeTurnConfig{IsSpeaking: o.IsSpeaking},
+			); err != nil {
+				err := fmt.Errorf("failed to process active turn: %v", err)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				// TODO: Probably should be able to requeue the prompt or something
+				// here
+			}
+		}(promptQueueItem)
 	}
 }
 

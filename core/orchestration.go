@@ -3,7 +3,6 @@ package orchestration
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"log"
 
@@ -19,8 +18,7 @@ type Orchestrator struct {
 
 	conversation Conversation
 
-	eventQueue  chan eventQueueItem
-	promptEnded sync.WaitGroup
+	eventQueue chan eventQueueItem
 
 	tools []llms.Tool
 

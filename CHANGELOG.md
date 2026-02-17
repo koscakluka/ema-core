@@ -38,6 +38,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   preserving the underlying cause
 - active turn cancellation now uses an atomic cancel state with idempotent
   `Cancel` handling, so cancellation checks reliably gate turn processing
+- active turn worker errors are now aggregated across response/text/speech
+  processors (including panic recovery) and propagated after safe finalization
+- assistant queue processing now relies on single-consumer sequencing instead of
+  redundant per-turn waitgroup gating, avoiding fragile turn-finalize coupling
 
 ## [v0.0.16] - 2026-02-16
 

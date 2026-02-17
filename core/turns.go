@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -129,24 +130,65 @@ func (t *Conversation) processActiveTurn(ctx context.Context, event llms.EventV0
 	activeTurn := newActiveTurn(ctx, event, components, callbacks, config)
 	t.activeTurn = activeTurn
 	ctx, cancel := context.WithCancel(ctx)
-	run := func(wg *sync.WaitGroup, f func() error) {
-		if err := f(); err != nil {
+	defer cancel()
+
+	var workerErr error
+	workerErrMu := sync.Mutex{}
+	addWorkerErr := func(err error) {
+		if err == nil {
+			return
+		}
+		workerErrMu.Lock()
+		workerErr = errors.Join(workerErr, err)
+		workerErrMu.Unlock()
+	}
+
+	run := func(name string, f func(context.Context) error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				addWorkerErr(fmt.Errorf("%s worker panicked: %v", name, recovered))
+				cancel()
+			}
+		}()
+
+		if err := f(ctx); err != nil {
+			addWorkerErr(fmt.Errorf("%s worker failed: %w", name, err))
 			cancel()
 		}
-		wg.Done()
 	}
 
 	wg := &sync.WaitGroup{}
 	wg.Add(3)
-	go run(wg, func() error { return t.activeTurn.generateResponse(ctx, t.turns) })
-
-	go run(wg, func() error { return t.activeTurn.processResponseText(ctx) })
-	go run(wg, func() error { return t.activeTurn.processSpeech(ctx) })
+	go func() {
+		defer wg.Done()
+		run("response generation", func(ctx context.Context) error {
+			return activeTurn.generateResponse(ctx, t.turns)
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		run("response text processing", activeTurn.processResponseText)
+	}()
+	go func() {
+		defer wg.Done()
+		run("speech processing", activeTurn.processSpeech)
+	}()
 
 	wg.Wait()
-	activeTurn.Finalise()
-	if activeTurn.err != nil {
-		return fmt.Errorf("one or more active turn processes failed: %w", activeTurn.err)
+
+	finaliseErr := func() (err error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = fmt.Errorf("active turn finalise panicked: %v", recovered)
+			}
+		}()
+		activeTurn.Finalise()
+		return nil
+	}()
+	addWorkerErr(finaliseErr)
+
+	if workerErr != nil {
+		return fmt.Errorf("one or more active turn processes failed: %w", workerErr)
 	}
 
 	return nil
