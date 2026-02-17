@@ -8,6 +8,26 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `core/EventHandlerV0` and `core/WithEventHandlerV0` for plugging custom event
+  handlers into `core/Orchestrator`
+- internal orchestration control events in `core/events` for canceling turns and
+  interruption lifecycle updates
+- `core/events/interruptions` event handlers (`NewEventHandlerWithStructuredPrompt`
+  and `NewEventHandlerWithGeneralPrompt`) that combine basic event processing
+  and interruption classification
+
+### Deprecated
+
+- `core/WithInterruptionHandlerV0`, `core/WithInterruptionHandlerV1`, and
+  `core/WithInterruptionHandlerV2` in favor of `core/WithEventHandlerV0`
+
+### Changed
+
+- default internal event handling now owns interruption processing and emits
+  control events consumed by the orchestrator
+
 ## [v0.0.16] - 2026-02-16
 
 ### Added
