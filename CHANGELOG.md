@@ -28,6 +28,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - default internal event handling now owns interruption processing and emits
   control events consumed by the orchestrator
 
+### Fixed
+
+- OpenAI and Groq LLM clients now close HTTP response bodies in all code paths,
+  including per-request handling inside Groq prompt loops
+
 ## [v0.0.16] - 2026-02-16
 
 ### Added

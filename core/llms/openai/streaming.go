@@ -69,209 +69,211 @@ type Stream struct {
 	messages []openAIMessage
 }
 
-func (s *Stream) Chunks(yield func(llms.StreamChunk, error) bool) {
-	var toolChoice *string
-	if s.tools != nil {
-		toolChoice = utils.Ptr("auto")
-	}
-
-	reqBody := requestBody{
-		Model:      s.model,
-		Input:      s.messages,
-		Stream:     true,
-		Tools:      s.tools,
-		ToolChoice: toolChoice,
-		// TODO: Make sure reasoning can be tweaked and activated
-		// OpenAI requires the organisation to be approved before this can be
-		// used. Probably some way of caching the result of the response would
-		// be useful and skiping reasoning in those cases instead of failing.
-		// Reasoning: &requestBodyReasoning{
-		// 	Effort:  utils.Ptr("low"),
-		// 	Summary: utils.Ptr("auto"),
-		// },
-	}
-
-	requestBodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		yield(nil, fmt.Errorf("error marshalling JSON: %w", err))
-		return
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBodyBytes))
-	if err != nil {
-		yield(nil, fmt.Errorf("error creating HTTP request: %w", err))
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.apiKey)
-	// TODO: Add org and project headers
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		yield(nil, fmt.Errorf("error sending request: %w", err))
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		// TODO: Retry depending on status, send back a message to the user
-		// to indicate that something is going on
-		yield(nil, fmt.Errorf("non-OK HTTP status: %s", resp.Status))
-		return
-	}
-
-	usage := llms.Usage{}
-	lapTime := time.Now()
-
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		chunk := strings.TrimSpace(strings.TrimPrefix(scanner.Text(), chunkPrefix))
-
-		if len(chunk) == 0 {
-			continue
+func (s *Stream) Chunks(ctx context.Context) func(func(llms.StreamChunk, error) bool) {
+	return func(yield func(llms.StreamChunk, error) bool) {
+		var toolChoice *string
+		if s.tools != nil {
+			toolChoice = utils.Ptr("auto")
 		}
 
-		if !strings.HasPrefix(chunk, "event:") {
-			// HACK: We probably shouldn't, but let's see if this breaks
-			// anything
-			continue
+		reqBody := requestBody{
+			Model:      s.model,
+			Input:      s.messages,
+			Stream:     true,
+			Tools:      s.tools,
+			ToolChoice: toolChoice,
+			// TODO: Make sure reasoning can be tweaked and activated
+			// OpenAI requires the organisation to be approved before this can be
+			// used. Probably some way of caching the result of the response would
+			// be useful and skiping reasoning in those cases instead of failing.
+			// Reasoning: &requestBodyReasoning{
+			// 	Effort:  utils.Ptr("low"),
+			// 	Summary: utils.Ptr("auto"),
+			// },
 		}
 
-		event := strings.TrimSpace(strings.TrimPrefix(chunk, eventPrefix))
-		// log.Println("Event:", event)
+		requestBodyBytes, err := json.Marshal(reqBody)
+		if err != nil {
+			yield(nil, fmt.Errorf("error marshalling JSON: %w", err))
+			return
+		}
 
-		scanner.Scan()
-		chunk = strings.TrimSpace(strings.TrimPrefix(scanner.Text(), chunkPrefix))
-		// log.Println("Chunk:", chunk)
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBodyBytes))
+		if err != nil {
+			yield(nil, fmt.Errorf("error creating HTTP request: %w", err))
+			return
+		}
 
-		switch streamingEventType(event) {
-		case streamingEventResponseCreated:
-			lapTime = time.Now()
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+s.apiKey)
+		// TODO: Add org and project headers
 
-		case streamingEventResponseQueued:
-			lapTime = time.Now()
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			yield(nil, fmt.Errorf("error sending request: %w", err))
+			return
+		}
+		defer resp.Body.Close()
 
-		case streamingEventResponseInProgress:
-			usage.QueueTime = time.Since(lapTime).Seconds()
-			lapTime = time.Now()
+		if resp.StatusCode != http.StatusOK {
+			// TODO: Retry depending on status, send back a message to the user
+			// to indicate that something is going on
+			yield(nil, fmt.Errorf("non-OK HTTP status: %s", resp.Status))
+			return
+		}
 
-		case streamingEventResponseOutputItemAdded:
-			usage.InputProcessingTimes = time.Since(lapTime).Seconds()
-			usage.PromptTime = time.Since(lapTime).Seconds()
-			lapTime = time.Now()
+		usage := llms.Usage{}
+		lapTime := time.Now()
 
-		case streamingEventResponseOutputTextDelta:
-			var responseBody streamingBodyResponseTextDelta
-			if err := json.Unmarshal([]byte(chunk), &responseBody); err != nil {
-				if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
-					return
-				}
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			chunk := strings.TrimSpace(strings.TrimPrefix(scanner.Text(), chunkPrefix))
+
+			if len(chunk) == 0 {
 				continue
 			}
-			if !yield(StreamContentChunk{finishReason: nil, content: responseBody.Delta}, nil) {
-				return
-			}
 
-		case streamingEventResponseOutputItemDone:
-			var responseBody streamingBodyOutputItemDone[streamingBodyOutputItemDoneItem]
-			if err := json.Unmarshal([]byte(chunk), &responseBody); err != nil {
-				if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
-					return
-				}
+			if !strings.HasPrefix(chunk, "event:") {
+				// HACK: We probably shouldn't, but let's see if this breaks
+				// anything
 				continue
 			}
-			switch responseBody.Item.Type {
-			case "function_call":
-				var responseBody streamingBodyOutputItemDone[streamingBodyOutputItemDoneItemFunctionCall]
+
+			event := strings.TrimSpace(strings.TrimPrefix(chunk, eventPrefix))
+			// log.Println("Event:", event)
+
+			scanner.Scan()
+			chunk = strings.TrimSpace(strings.TrimPrefix(scanner.Text(), chunkPrefix))
+			// log.Println("Chunk:", chunk)
+
+			switch streamingEventType(event) {
+			case streamingEventResponseCreated:
+				lapTime = time.Now()
+
+			case streamingEventResponseQueued:
+				lapTime = time.Now()
+
+			case streamingEventResponseInProgress:
+				usage.QueueTime = time.Since(lapTime).Seconds()
+				lapTime = time.Now()
+
+			case streamingEventResponseOutputItemAdded:
+				usage.InputProcessingTimes = time.Since(lapTime).Seconds()
+				usage.PromptTime = time.Since(lapTime).Seconds()
+				lapTime = time.Now()
+
+			case streamingEventResponseOutputTextDelta:
+				var responseBody streamingBodyResponseTextDelta
 				if err := json.Unmarshal([]byte(chunk), &responseBody); err != nil {
 					if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
 						return
 					}
 					continue
 				}
-				if !yield(StreamToolCallChunk{
-					toolCall: llms.ToolCall{
-						ID:        responseBody.Item.CallID,
-						Type:      "function",
-						Name:      responseBody.Item.Name,
-						Arguments: responseBody.Item.Arguments,
-						Function: llms.ToolCallFunction{
+				if !yield(StreamContentChunk{finishReason: nil, content: responseBody.Delta}, nil) {
+					return
+				}
+
+			case streamingEventResponseOutputItemDone:
+				var responseBody streamingBodyOutputItemDone[streamingBodyOutputItemDoneItem]
+				if err := json.Unmarshal([]byte(chunk), &responseBody); err != nil {
+					if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
+						return
+					}
+					continue
+				}
+				switch responseBody.Item.Type {
+				case "function_call":
+					var responseBody streamingBodyOutputItemDone[streamingBodyOutputItemDoneItemFunctionCall]
+					if err := json.Unmarshal([]byte(chunk), &responseBody); err != nil {
+						if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
+							return
+						}
+						continue
+					}
+					if !yield(StreamToolCallChunk{
+						toolCall: llms.ToolCall{
+							ID:        responseBody.Item.CallID,
+							Type:      "function",
 							Name:      responseBody.Item.Name,
 							Arguments: responseBody.Item.Arguments,
+							Function: llms.ToolCallFunction{
+								Name:      responseBody.Item.Name,
+								Arguments: responseBody.Item.Arguments,
+							},
 						},
-					},
-				}, nil) {
+					}, nil) {
+						return
+					}
+				}
+
+			case streamingEventResponseReasoningTextDelta,
+				streamingEventResponseReasoningSummaryTextDelta:
+				// TODO: Find out when streamingEventResponseReasoningTextDelta is
+				// activated, so far, didn't get it.
+				var responseBody streamingBodyResponseTextDelta
+				err := json.Unmarshal([]byte(chunk), &responseBody)
+				if err != nil {
+					if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
+						return
+					}
+					continue
+				}
+				// TODO: Figure out what is the channel
+				// channel:      delta.Channel,
+				if !yield(StreamReasoningChunk{reasoning: responseBody.Delta}, nil) {
 					return
 				}
-			}
 
-		case streamingEventResponseReasoningTextDelta,
-			streamingEventResponseReasoningSummaryTextDelta:
-			// TODO: Find out when streamingEventResponseReasoningTextDelta is
-			// activated, so far, didn't get it.
-			var responseBody streamingBodyResponseTextDelta
-			err := json.Unmarshal([]byte(chunk), &responseBody)
-			if err != nil {
-				if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
-					return
+			case streamingEventResponseCompleted:
+				usage.CompletionTime = time.Since(lapTime).Seconds()
+				usage.OutputProcessingTime = time.Since(lapTime).Seconds()
+				usage.TotalTime = usage.InputProcessingTimes + usage.OutputProcessingTime
+
+				var responseBody streamingBodyResponseCompleted
+				if err := json.Unmarshal([]byte(chunk), &responseBody); err != nil {
+					if !yield(StreamUsageChunk{usage: usage}, nil) {
+						return
+					}
+					if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
+						return
+					}
+					continue
 				}
-				continue
-			}
-			// TODO: Figure out what is the channel
-			// channel:      delta.Channel,
-			if !yield(StreamReasoningChunk{reasoning: responseBody.Delta}, nil) {
-				return
-			}
 
-		case streamingEventResponseCompleted:
-			usage.CompletionTime = time.Since(lapTime).Seconds()
-			usage.OutputProcessingTime = time.Since(lapTime).Seconds()
-			usage.TotalTime = usage.InputProcessingTimes + usage.OutputProcessingTime
+				if responseBody.Response.Usage != nil {
+					usage.InputTokens = responseBody.Response.Usage.InputTokens
+					usage.PromptTokens = responseBody.Response.Usage.InputTokens
+					usage.OutputTokens = responseBody.Response.Usage.OutputTokens
+					usage.CompletionTokens = responseBody.Response.Usage.OutputTokens
+					usage.TotalTokens = responseBody.Response.Usage.TotalTokens
 
-			var responseBody streamingBodyResponseCompleted
-			if err := json.Unmarshal([]byte(chunk), &responseBody); err != nil {
+					if responseBody.Response.Usage.InputTokensDetails != nil {
+						usage.InputTokensDetails = &llms.InputTokensDetails{
+							CachedTokens: responseBody.Response.Usage.InputTokensDetails.CachedTokens,
+						}
+					}
+					if responseBody.Response.Usage.OutputTokensDetails != nil {
+						usage.OutputTokensDetails = &llms.OutputTokensDetails{
+							ReasoningTokens: responseBody.Response.Usage.OutputTokensDetails.ReasoningTokens,
+						}
+						usage.CompletionTokensDetails = &llms.CompletionTokensDetails{
+							ReasoningTokens: responseBody.Response.Usage.OutputTokensDetails.ReasoningTokens,
+						}
+					}
+				}
+
 				if !yield(StreamUsageChunk{usage: usage}, nil) {
 					return
 				}
-				if !yield(nil, fmt.Errorf("error unmarshalling JSON: %w", err)) {
-					return
-				}
-				continue
-			}
-
-			if responseBody.Response.Usage != nil {
-				usage.InputTokens = responseBody.Response.Usage.InputTokens
-				usage.PromptTokens = responseBody.Response.Usage.InputTokens
-				usage.OutputTokens = responseBody.Response.Usage.OutputTokens
-				usage.CompletionTokens = responseBody.Response.Usage.OutputTokens
-				usage.TotalTokens = responseBody.Response.Usage.TotalTokens
-
-				if responseBody.Response.Usage.InputTokensDetails != nil {
-					usage.InputTokensDetails = &llms.InputTokensDetails{
-						CachedTokens: responseBody.Response.Usage.InputTokensDetails.CachedTokens,
-					}
-				}
-				if responseBody.Response.Usage.OutputTokensDetails != nil {
-					usage.OutputTokensDetails = &llms.OutputTokensDetails{
-						ReasoningTokens: responseBody.Response.Usage.OutputTokensDetails.ReasoningTokens,
-					}
-					usage.CompletionTokensDetails = &llms.CompletionTokensDetails{
-						ReasoningTokens: responseBody.Response.Usage.OutputTokensDetails.ReasoningTokens,
-					}
-				}
-			}
-
-			if !yield(StreamUsageChunk{usage: usage}, nil) {
-				return
 			}
 		}
-	}
 
-	if err := scanner.Err(); err != nil {
-		yield(nil, fmt.Errorf("error reading streamed response: %w", err))
-		return
+		if err := scanner.Err(); err != nil {
+			yield(nil, fmt.Errorf("error reading streamed response: %w", err))
+			return
+		}
 	}
 }
 

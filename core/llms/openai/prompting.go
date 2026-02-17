@@ -71,6 +71,8 @@ func Prompt(
 	if err != nil {
 		return nil, fmt.Errorf("error sending request: %w", err)
 	}
+	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		// TODO: Retry depending on status, send back a message to the user
 		// to indicate that something is going on
@@ -82,7 +84,6 @@ func Prompt(
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
-	defer resp.Body.Close()
 
 	var responseBody generalResponseBody
 	if err := json.Unmarshal(bodyBytes, &responseBody); err != nil {

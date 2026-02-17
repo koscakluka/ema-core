@@ -90,7 +90,6 @@ func Prompt(
 		if err != nil {
 			return nil, fmt.Errorf("error sending request: %w", err)
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			// TODO: Retry depending on status, send back a message to the user
@@ -135,6 +134,9 @@ func Prompt(
 
 		if err := scanner.Err(); err != nil {
 			log.Println("Error reading streamed response:", err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			log.Println("Error closing response body:", err)
 		}
 
 		messages = append(messages, message{
