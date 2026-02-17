@@ -24,12 +24,13 @@ type Orchestrator struct {
 
 	tools []llms.Tool
 
-	llm                LLM
-	speechToTextClient SpeechToText
-	textToSpeechClient textToSpeech
-	audioInput         AudioInput
-	audioOutput        audioOutput
-	eventHandler       internalEventHandler
+	llm                 LLM
+	speechToTextClient  SpeechToText
+	textToSpeechClient  textToSpeech
+	audioInput          AudioInput
+	audioOutput         audioOutput
+	eventHandler        EventHandlerV0
+	defaultEventHandler internalEventHandler
 
 	orchestrateOptions OrchestrateOptions
 	config             *Config
@@ -44,13 +45,15 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 		eventQueue:  make(chan eventQueueItem, 10), // TODO: Figure out good valiues for this
 		config:      &Config{AlwaysRecording: true},
 		baseContext: context.Background(),
-		eventHandler: internalEventHandler{
+		defaultEventHandler: internalEventHandler{
 			interruptionHandlerV0: nil,
 			interruptionHandlerV1: nil,
 			interruptionHandlerV2: nil,
+			orchestrator:          nil,
 		},
 	}
-	o.eventHandler.orchestrator = o
+	o.defaultEventHandler.orchestrator = o
+	o.eventHandler = &o.defaultEventHandler
 
 	for _, opt := range opts {
 		opt(o)

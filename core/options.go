@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/koscakluka/ema-core/core/audio"
+	"github.com/koscakluka/ema-core/core/conversations"
 	"github.com/koscakluka/ema-core/core/interruptions"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/speechtotext"
@@ -114,13 +115,28 @@ func WithOrchestrationTools() OrchestratorOption {
 	}
 }
 
+type EventHandlerV0 interface {
+	HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) ([]llms.EventV0, error)
+}
+
+func WithEventHandlerV0(handler EventHandlerV0) OrchestratorOption {
+	return func(o *Orchestrator) {
+		if handler == nil {
+			o.eventHandler = &o.defaultEventHandler
+			return
+		}
+		o.eventHandler = handler
+	}
+}
+
 type InterruptionHandlerV0 interface {
 	HandleV0(prompt string, turns []llms.Turn, tools []llms.Tool, orchestrator interruptions.OrchestratorV0) error
 }
 
+// Deprecated: use WithEventHandlerV0 instead.
 func WithInterruptionHandlerV0(handler InterruptionHandlerV0) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.eventHandler.interruptionHandlerV0 = handler
+		o.defaultEventHandler.interruptionHandlerV0 = handler
 	}
 }
 
@@ -128,9 +144,10 @@ type InterruptionHandlerV1 interface {
 	HandleV1(id int64, orchestrator interruptions.OrchestratorV0, tools []llms.Tool) (*llms.InterruptionV0, error)
 }
 
+// Deprecated: use WithEventHandlerV0 instead.
 func WithInterruptionHandlerV1(handler InterruptionHandlerV1) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.eventHandler.interruptionHandlerV1 = handler
+		o.defaultEventHandler.interruptionHandlerV1 = handler
 	}
 }
 
@@ -138,9 +155,10 @@ type InterruptionHandlerV2 interface {
 	HandleV2(ctx context.Context, id int64, orchestrator interruptions.OrchestratorV0, tools []llms.Tool) (*llms.InterruptionV0, error)
 }
 
+// Deprecated: use WithEventHandlerV0 instead.
 func WithInterruptionHandlerV2(handler InterruptionHandlerV2) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.eventHandler.interruptionHandlerV2 = handler
+		o.defaultEventHandler.interruptionHandlerV2 = handler
 	}
 }
 
