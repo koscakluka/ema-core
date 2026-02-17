@@ -341,7 +341,7 @@ func (c *TextToSpeechClient) OpenStream(ctx context.Context, opts ...texttospeec
 
 	encodingInfo, err := convertEncoding(c.options.EncodingInfo)
 	if err != nil {
-		return fmt.Errorf("invalid encoding:", err)
+		return fmt.Errorf("invalid encoding: %w", err)
 	}
 
 	conn, err := connectWebsocket(c.voice, *encodingInfo)

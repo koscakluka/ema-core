@@ -32,6 +32,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - OpenAI and Groq LLM clients now close HTTP response bodies in all code paths,
   including per-request handling inside Groq prompt loops
+- Deepgram TTS stream opening now wraps invalid encoding errors correctly,
+  preserving the underlying cause
 
 ## [v0.0.16] - 2026-02-16
 
