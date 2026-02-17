@@ -2,6 +2,7 @@ package interruptions
 
 import (
 	"context"
+	"iter"
 	"strings"
 	"time"
 
@@ -22,51 +23,62 @@ func NewEventHandlerWithGeneralPrompt(classificationLLM LLMWithGeneralPrompt) *E
 	return &EventHandler{llm: classificationLLM}
 }
 
-func (h *EventHandler) HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) ([]llms.EventV0, error) {
-	event = normalizeEvent(event)
-	if shouldIgnoreEvent(event) {
-		return []llms.EventV0{}, nil
+func (h *EventHandler) HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) iter.Seq2[llms.EventV0, error] {
+	return func(yield func(llms.EventV0, error) bool) {
+		event = normalizeEvent(event)
+		if shouldIgnoreEvent(event) {
+			return
+		}
+
+		if _, isCallTool := event.(coreevents.CallToolEvent); isCallTool {
+			yield(event, nil)
+			return
+		}
+
+		if h == nil || h.llm == nil {
+			yield(event, nil)
+			return
+		}
+
+		if conversation.ActiveTurn() == nil {
+			yield(event, nil)
+			return
+		}
+
+		interruption := llms.InterruptionV0{
+			ID:     time.Now().UnixNano(),
+			Source: event.String(),
+		}
+
+		if !yield(coreevents.NewRecordInterruptionEvent(interruption), nil) {
+			return
+		}
+
+		history := conversation.History()
+		if activeTurn := conversation.ActiveTurn(); activeTurn != nil {
+			history = append(history, *activeTurn)
+		}
+
+		classified, err := classify(ctx, interruption, h.llm,
+			WithHistory(history),
+			WithTools(conversation.AvailableTools()),
+		)
+		if err != nil {
+			if !yield(event, nil) {
+				return
+			}
+			yield(nil, err)
+			return
+		}
+
+		for _, interruptionEvent := range resolveInterruptionAsEvents(*classified, conversation) {
+			if !yield(interruptionEvent, nil) {
+				return
+			}
+		}
+		classified.Resolved = true
+		yield(coreevents.NewResolveInterruptionEvent(classified.ID, classified.Type, true), nil)
 	}
-
-	if _, isCallTool := event.(coreevents.CallToolEvent); isCallTool {
-		return []llms.EventV0{event}, nil
-	}
-
-	if h == nil || h.llm == nil {
-		return []llms.EventV0{event}, nil
-	}
-
-	if conversation.ActiveTurn() == nil {
-		return []llms.EventV0{event}, nil
-	}
-
-	interruption := llms.InterruptionV0{
-		ID:     time.Now().UnixNano(),
-		Source: event.String(),
-	}
-
-	history := conversation.History()
-	if activeTurn := conversation.ActiveTurn(); activeTurn != nil {
-		history = append(history, *activeTurn)
-	}
-
-	classified, err := classify(ctx, interruption, h.llm,
-		WithHistory(history),
-		WithTools(conversation.AvailableTools()),
-	)
-
-	eventsOut := []llms.EventV0{coreevents.NewRecordInterruptionEvent(interruption)}
-	if err != nil {
-		return append(eventsOut, event), err
-	}
-
-	for _, interruptionEvent := range resolveInterruptionAsEvents(*classified, conversation) {
-		eventsOut = append(eventsOut, interruptionEvent)
-	}
-	classified.Resolved = true
-	eventsOut = append(eventsOut, coreevents.NewResolveInterruptionEvent(classified.ID, classified.Type, true))
-
-	return eventsOut, nil
 }
 
 func shouldIgnoreEvent(event llms.EventV0) bool {

@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"iter"
 
 	"github.com/koscakluka/ema-core/core/audio"
 	"github.com/koscakluka/ema-core/core/conversations"
@@ -116,7 +117,7 @@ func WithOrchestrationTools() OrchestratorOption {
 }
 
 type EventHandlerV0 interface {
-	HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) ([]llms.EventV0, error)
+	HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) iter.Seq2[llms.EventV0, error]
 }
 
 func WithEventHandlerV0(handler EventHandlerV0) OrchestratorOption {

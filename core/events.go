@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"iter"
 	"time"
 
 	"github.com/koscakluka/ema-core/core/conversations"
@@ -39,25 +40,31 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 		}
 	}
 
-	handlerEvents, err := o.eventHandler.HandleV0(ctx, event, &orchestratorActiveContext{
+	for event, err := range o.eventHandler.HandleV0(ctx, event, &orchestratorActiveContext{
 		conversation: &o.conversation,
 		tools:        o.tools,
-	})
-	o.processEventHandlerOutput(ctx, handlerEvents)
-	if err != nil {
-		var span trace.Span
-		if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-			span = trace.SpanFromContext(activeTurn.ctx)
-		} else {
-			span = trace.SpanFromContext(o.baseContext)
+	}) {
+		if err != nil {
+			var span trace.Span
+			if activeTurn := o.conversation.activeTurn; activeTurn != nil {
+				span = trace.SpanFromContext(activeTurn.ctx)
+			} else {
+				span = trace.SpanFromContext(o.baseContext)
+			}
+			span.RecordError(err)
+			return
 		}
-		span.RecordError(err)
-		return
-	}
-}
+		if event == nil {
+			continue
+		}
 
-func (o *Orchestrator) processEventHandlerOutput(ctx context.Context, handlerEvents []llms.EventV0) {
-	for _, event := range handlerEvents {
+		// TODO: If this block grows further, replace this switch with one of:
+		// 1) dispatch table: map event type -> handler func, so adding event types
+		// stays local and avoids a large switch;
+		// 2) reducer + effects: map events to explicit side effects first, then run
+		// effects separately for easier testing;
+		// 3) middleware pipeline: small chained handlers when we need logging,
+		// retries, metrics, or other cross-cutting behavior around event handling.
 		switch t := event.(type) {
 		case events.CancelTurnEvent:
 			o.CancelTurn()
@@ -125,31 +132,45 @@ type internalEventHandler struct {
 	orchestrator          *Orchestrator
 }
 
-func (h *internalEventHandler) HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) ([]llms.EventV0, error) {
-	event = h.normalizeEvent(event)
-	if h.shouldIgnoreEvent(event) {
-		return []llms.EventV0{}, nil
+func (h *internalEventHandler) HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) iter.Seq2[llms.EventV0, error] {
+	return func(yield func(llms.EventV0, error) bool) {
+		event = h.normalizeEvent(event)
+		if h.shouldIgnoreEvent(event) {
+			return
+		}
+
+		if _, isCallTool := event.(events.CallToolEvent); isCallTool {
+			yield(event, nil)
+			return
+		}
+
+		if activeTurn := conversation.ActiveTurn(); activeTurn == nil {
+			yield(event, nil)
+			return
+		}
+
+		interruption := h.newInterruption(event)
+		if !yield(events.NewRecordInterruptionEvent(*interruption), nil) {
+			return
+		}
+
+		resolvedInterruption, interruptionEvents, err := h.resolveInterruption(ctx, event, interruption, conversation)
+		if err != nil {
+			if !yield(event, nil) {
+				return
+			}
+			yield(nil, err)
+			return
+		}
+
+		for _, interruptionEvent := range interruptionEvents {
+			if !yield(interruptionEvent, nil) {
+				return
+			}
+		}
+
+		yield(events.NewResolveInterruptionEvent(resolvedInterruption.ID, resolvedInterruption.Type, resolvedInterruption.Resolved), nil)
 	}
-
-	if _, isCallTool := event.(events.CallToolEvent); isCallTool {
-		return []llms.EventV0{event}, nil
-	}
-
-	if activeTurn := conversation.ActiveTurn(); activeTurn == nil {
-		return []llms.EventV0{event}, nil
-	}
-
-	interruption := h.newInterruption(event)
-	eventsOut := []llms.EventV0{events.NewRecordInterruptionEvent(*interruption)}
-
-	resolvedInterruption, interruptionEvents, err := h.resolveInterruption(ctx, event, interruption, conversation)
-	if err != nil {
-		return append(eventsOut, event), err
-	}
-	eventsOut = append(eventsOut, interruptionEvents...)
-	eventsOut = append(eventsOut, events.NewResolveInterruptionEvent(resolvedInterruption.ID, resolvedInterruption.Type, resolvedInterruption.Resolved))
-
-	return eventsOut, nil
 }
 
 func (h *internalEventHandler) shouldIgnoreEvent(event llms.EventV0) bool {
@@ -182,7 +203,6 @@ func (h *internalEventHandler) resolveInterruption(ctx context.Context, event ll
 	if h.orchestrator == nil {
 		return nil, nil, fmt.Errorf("internal event handler requires orchestrator")
 	}
-	h.orchestrator.conversation.activeTurn.Interruptions = append(h.orchestrator.conversation.activeTurn.Interruptions, *interruption)
 
 	if h.interruptionHandlerV2 != nil {
 		resolved, err := h.interruptionHandlerV2.HandleV2(ctx, interruption.ID, h.orchestrator, availableTools)
