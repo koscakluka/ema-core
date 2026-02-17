@@ -12,11 +12,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `core/EventHandlerV0` and `core/WithEventHandlerV0` for plugging custom event
   handlers into `core/Orchestrator`
-- internal orchestration control events in `core/events` for canceling turns and
-  interruption lifecycle updates
+- `core/conversations.ActiveContextV0` to expose conversation history, active
+  turn, and available tools to event handlers
 - `core/events/interruptions` event handlers (`NewEventHandlerWithStructuredPrompt`
   and `NewEventHandlerWithGeneralPrompt`) that combine basic event processing
   and interruption classification
+- interruption lifecycle event types in `core/events` for recording,
+  resolving, and canceling turns during interruption handling
 
 ### Deprecated
 
@@ -25,8 +27,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- default internal event handling now owns interruption processing and emits
-  control events consumed by the orchestrator
+- interruption handling now runs through the event-handler pipeline, so custom
+  handlers can influence turn cancellation, continuation prompts, and tool calls
 
 ### Fixed
 
