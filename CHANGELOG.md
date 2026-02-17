@@ -48,8 +48,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   queueing is rejected after close, active turns are cancelled, and the assistant
   loop exits through an explicit close signal without channel-close panics
 - orchestrator and audio client startup no longer abort the process via
-  `log.Fatalf`; initialization failures are now returned/logged as recoverable
+  `log.Fatalf`; initialization failures are now returned/recorded as recoverable
   errors
+- active turn finalization now closes legacy TTS streams reliably (with
+  idempotent close handling) and records close failures on turn spans
 
 ## [v0.0.16] - 2026-02-16
 

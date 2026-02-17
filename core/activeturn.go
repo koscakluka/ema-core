@@ -138,7 +138,12 @@ func (t *activeTurn) Finalise() {
 		t.Responses = append(t.Responses, *t.finalResponse)
 	}
 	t.IsFinalised = true
-	t.tts.Close(t.ctx)
+	if err := t.tts.Close(t.ctx); err != nil {
+		err = fmt.Errorf("failed to close tts resources while finalising active turn: %w", err)
+		span := trace.SpanFromContext(t.ctx)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
 	t.callbacks.OnFinalise(t)
 }
 
@@ -148,8 +153,10 @@ func (t *activeTurn) Cancel() {
 	}
 	t.textBuffer.Clear()
 	if err := t.tts.Cancel(); err != nil {
+		err = fmt.Errorf("failed to cancel tts resources while cancelling active turn: %w", err)
 		span := trace.SpanFromContext(t.ctx)
 		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 	}
 	t.audioBuffer.Stop()
 	t.audioOut.Clear()
@@ -306,9 +313,9 @@ type activeTurnTTS struct {
 	ttsClient    TextToSpeech
 	ttsGenerator texttospeech.SpeechGeneratorV0
 
-	initialized   chan struct{}
-	connected     bool
-	clientStarted bool
+	initialized  chan struct{}
+	connected    bool
+	closeStarted atomic.Bool
 }
 
 // init is a temporary method that setups up different TTS versions
@@ -362,15 +369,46 @@ func (t *activeTurnTTS) waitUntilInitialized() {
 }
 
 func (t *activeTurnTTS) Close(ctx context.Context) error {
-	if t.ttsClient != nil && t.clientStarted {
-		if client, ok := t.ttsClient.(interface{ Close(ctx context.Context) }); ok {
+	if !t.closeStarted.CompareAndSwap(false, true) {
+		return nil
+	}
+
+	var closeErr error
+	closedAny := false
+
+	if t.ttsClient != nil {
+		closedAny = true
+		switch client := t.ttsClient.(type) {
+		case interface{ Close(context.Context) error }:
+			if err := client.Close(ctx); err != nil {
+				closeErr = errors.Join(closeErr, fmt.Errorf("legacy tts client close(ctx) failed: %w", err))
+			}
+		case interface{ Close(context.Context) }:
 			client.Close(ctx)
-		}
-	} else if t.ttsGenerator != nil {
-		if err := t.ttsGenerator.Close(); err != nil {
-			return fmt.Errorf("failed to close tts: %w", err)
+		case interface{ CloseStream(context.Context) error }:
+			if err := client.CloseStream(ctx); err != nil {
+				closeErr = errors.Join(closeErr, fmt.Errorf("legacy tts client close stream failed: %w", err))
+			}
+		default:
+			closeErr = errors.Join(closeErr, fmt.Errorf("legacy tts client does not expose a supported close method"))
 		}
 	}
+
+	if t.ttsGenerator != nil {
+		closedAny = true
+		if err := t.ttsGenerator.Close(); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("speech generator close failed: %w", err))
+		}
+	}
+
+	if !closedAny {
+		return nil
+	}
+
+	if closeErr != nil {
+		return fmt.Errorf("failed to close active turn tts resources: %w", closeErr)
+	}
+
 	return nil
 }
 
