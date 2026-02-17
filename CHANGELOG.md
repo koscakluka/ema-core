@@ -36,6 +36,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   including per-request handling inside Groq prompt loops
 - Deepgram TTS stream opening now wraps invalid encoding errors correctly,
   preserving the underlying cause
+- active turn cancellation now uses an atomic cancel state with idempotent
+  `Cancel` handling, so cancellation checks reliably gate turn processing
 
 ## [v0.0.16] - 2026-02-16
 

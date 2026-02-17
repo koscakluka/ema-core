@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,7 +31,7 @@ type activeTurn struct {
 	callbacks  activeTurnCallbacks
 	config     activeTurnConfig
 
-	cancelled bool
+	cancelled atomic.Bool
 	err       error
 }
 
@@ -142,7 +143,9 @@ func (t *activeTurn) Finalise() {
 }
 
 func (t *activeTurn) Cancel() {
-	t.cancelled = true
+	if !t.cancelled.CompareAndSwap(false, true) {
+		return
+	}
 	t.textBuffer.Clear()
 	if err := t.tts.Cancel(); err != nil {
 		span := trace.SpanFromContext(t.ctx)
@@ -150,6 +153,10 @@ func (t *activeTurn) Cancel() {
 	}
 	t.audioBuffer.Stop()
 	t.audioOut.Clear()
+}
+
+func (t *activeTurn) IsCancelled() bool {
+	return t.cancelled.Load()
 }
 
 func (t *activeTurn) IsMutable() bool {
