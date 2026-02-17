@@ -39,11 +39,11 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 		}
 	}
 
-	// TODO: See what to do with the interruption here
-	unhandledEvents, _, err := o.eventHandler.HandleV0(ctx, event, &orchestratorActiveContext{
+	handlerEvents, err := o.eventHandler.HandleV0(ctx, event, &orchestratorActiveContext{
 		conversation: &o.conversation,
 		tools:        o.tools,
 	})
+	o.processEventHandlerOutput(ctx, handlerEvents)
 	if err != nil {
 		var span trace.Span
 		if activeTurn := o.conversation.activeTurn; activeTurn != nil {
@@ -54,20 +54,29 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 		span.RecordError(err)
 		return
 	}
+}
 
-	for _, event := range unhandledEvents {
+func (o *Orchestrator) processEventHandlerOutput(ctx context.Context, handlerEvents []llms.EventV0) {
+	for _, event := range handlerEvents {
 		switch t := event.(type) {
+		case events.CancelTurnEvent:
+			o.CancelTurn()
+		case events.RecordInterruptionEvent:
+			if activeTurn := o.conversation.activeTurn; activeTurn != nil {
+				activeTurn.Interruptions = append(activeTurn.Interruptions, t.Interruption)
+			}
+		case events.ResolveInterruptionEvent:
+			o.conversation.updateInterruption(t.ID, func(update *llms.InterruptionV0) {
+				update.Type = t.Type
+				update.Resolved = t.Resolved
+			})
 		case events.CallToolEvent:
 			if t.Tool != nil {
-				// TODO: This response should be recorded somewhere, probably in the
-				// interruption, and might even warrant a response
 				_, err := o.callTool(ctx, *t.Tool)
 				if err != nil {
 					return
 				}
 			} else {
-				// TODO: There should be some kind of response somewhere, at least
-				// recorded, probably in the interruption
 				if err := o.CallTool(ctx, t.Prompt); err != nil {
 					return
 				}
@@ -77,7 +86,6 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 			o.queueEvent(event)
 		}
 	}
-
 }
 
 type orchestratorActiveContext struct {
@@ -117,29 +125,31 @@ type internalEventHandler struct {
 	orchestrator          *Orchestrator
 }
 
-func (h *internalEventHandler) HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) ([]llms.EventV0, *llms.InterruptionV0, error) {
+func (h *internalEventHandler) HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) ([]llms.EventV0, error) {
 	event = h.normalizeEvent(event)
 	if h.shouldIgnoreEvent(event) {
-		return []llms.EventV0{}, nil, nil
+		return []llms.EventV0{}, nil
 	}
 
 	if _, isCallTool := event.(events.CallToolEvent); isCallTool {
-		return []llms.EventV0{event}, nil, nil
+		return []llms.EventV0{event}, nil
 	}
 
 	if activeTurn := conversation.ActiveTurn(); activeTurn == nil {
-		return []llms.EventV0{event}, nil, nil
+		return []llms.EventV0{event}, nil
 	}
 
 	interruption := h.newInterruption(event)
-	h.orchestrator.conversation.activeTurn.Interruptions = append(h.orchestrator.conversation.activeTurn.Interruptions, *interruption)
+	eventsOut := []llms.EventV0{events.NewRecordInterruptionEvent(*interruption)}
 
-	resolvedInterruption, err := h.resolveInterruption(ctx, event, interruption, conversation)
+	resolvedInterruption, interruptionEvents, err := h.resolveInterruption(ctx, event, interruption, conversation)
 	if err != nil {
-		return []llms.EventV0{event}, nil, err
+		return append(eventsOut, event), err
 	}
+	eventsOut = append(eventsOut, interruptionEvents...)
+	eventsOut = append(eventsOut, events.NewResolveInterruptionEvent(resolvedInterruption.ID, resolvedInterruption.Type, resolvedInterruption.Resolved))
 
-	return nil, resolvedInterruption, nil
+	return eventsOut, nil
 }
 
 func (h *internalEventHandler) shouldIgnoreEvent(event llms.EventV0) bool {
@@ -167,45 +177,38 @@ func (h *internalEventHandler) newInterruption(event llms.EventV0) *llms.Interru
 	}
 }
 
-func (h *internalEventHandler) resolveInterruption(ctx context.Context, event llms.EventV0, interruption *llms.InterruptionV0, conversation conversations.ActiveContextV0) (*llms.InterruptionV0, error) {
+func (h *internalEventHandler) resolveInterruption(ctx context.Context, event llms.EventV0, interruption *llms.InterruptionV0, conversation conversations.ActiveContextV0) (*llms.InterruptionV0, []llms.EventV0, error) {
 	availableTools := conversation.AvailableTools()
+	if h.orchestrator == nil {
+		return nil, nil, fmt.Errorf("internal event handler requires orchestrator")
+	}
+	h.orchestrator.conversation.activeTurn.Interruptions = append(h.orchestrator.conversation.activeTurn.Interruptions, *interruption)
 
 	if h.interruptionHandlerV2 != nil {
 		resolved, err := h.interruptionHandlerV2.HandleV2(ctx, interruption.ID, h.orchestrator, availableTools)
 		if err != nil {
-			return nil, fmt.Errorf("failed to handle interruption: %w", err)
+			return nil, nil, fmt.Errorf("failed to handle interruption: %w", err)
 		}
-		h.updateInterruption(interruption.ID, resolved.Type, resolved.Resolved)
-		return resolved, nil
+		return resolved, nil, nil
 	}
 
 	if h.interruptionHandlerV1 != nil {
 		resolved, err := h.interruptionHandlerV1.HandleV1(interruption.ID, h.orchestrator, availableTools)
 		if err != nil {
-			return nil, fmt.Errorf("failed to handle interruption: %w", err)
+			return nil, nil, fmt.Errorf("failed to handle interruption: %w", err)
 		}
-		h.updateInterruption(interruption.ID, resolved.Type, resolved.Resolved)
-		return resolved, nil
+		return resolved, nil, nil
 	}
 
 	if h.interruptionHandlerV0 != nil {
 		err := h.interruptionHandlerV0.HandleV0(event.String(), llms.ToTurnsV0FromV1(conversation.History()), availableTools, h.orchestrator)
 		if err != nil {
-			return nil, fmt.Errorf("failed to handle interruption: %w", err)
+			return nil, nil, fmt.Errorf("failed to handle interruption: %w", err)
 		}
-		h.updateInterruption(interruption.ID, interruption.Type, true)
 		interruption.Resolved = true
-		return interruption, nil
+		return interruption, nil, nil
 	}
 
-	h.updateInterruption(interruption.ID, interruption.Type, true)
 	interruption.Resolved = true
-	return interruption, nil
-}
-
-func (h *internalEventHandler) updateInterruption(id int64, typ string, resolved bool) {
-	h.orchestrator.conversation.updateInterruption(id, func(update *llms.InterruptionV0) {
-		update.Type = typ
-		update.Resolved = resolved
-	})
+	return interruption, nil, nil
 }
