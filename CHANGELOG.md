@@ -44,6 +44,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   redundant per-turn waitgroup gating, avoiding fragile turn-finalize coupling
 - prompt, stream, tool, and interruption-classifier failures in orchestration
   now propagate as explicit errors instead of being silently ignored
+- orchestrator shutdown is now idempotent and safe under concurrent activity:
+  queueing is rejected after close, active turns are cancelled, and the assistant
+  loop exits through an explicit close signal without channel-close panics
 
 ## [v0.0.16] - 2026-02-16
 

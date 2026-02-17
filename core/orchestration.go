@@ -3,13 +3,14 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	"log"
 
 	emaContext "github.com/koscakluka/ema-core/core/context"
 	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
-	"go.opentelemetry.io/otel/trace"
 )
 
 type Orchestrator struct {
@@ -19,6 +20,12 @@ type Orchestrator struct {
 	conversation Conversation
 
 	eventQueue chan eventQueueItem
+	closeCh    chan struct{}
+
+	assistantLoopDone    chan struct{}
+	assistantLoopOnce    sync.Once
+	assistantLoopStarted atomic.Bool
+	closeOnce            sync.Once
 
 	tools []llms.Tool
 
@@ -38,11 +45,13 @@ type Orchestrator struct {
 
 func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 	o := &Orchestrator{
-		IsRecording: false,
-		IsSpeaking:  false,
-		eventQueue:  make(chan eventQueueItem, 10), // TODO: Figure out good valiues for this
-		config:      &Config{AlwaysRecording: true},
-		baseContext: context.Background(),
+		IsRecording:       false,
+		IsSpeaking:        false,
+		eventQueue:        make(chan eventQueueItem, 10), // TODO: Figure out good valiues for this
+		closeCh:           make(chan struct{}),
+		assistantLoopDone: make(chan struct{}),
+		config:            &Config{AlwaysRecording: true},
+		baseContext:       context.Background(),
 		defaultEventHandler: internalEventHandler{
 			interruptionHandlerV0: nil,
 			interruptionHandlerV1: nil,
@@ -61,12 +70,33 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 }
 
 func (o *Orchestrator) Close() {
-	// TODO: Make sure that deepgramClient is closed and no longer transcribing
-	// before closing the channel
-	close(o.eventQueue)
-	if activeTurn := o.conversation.activeTurn; activeTurn != nil {
-		trace.SpanFromContext(activeTurn.ctx).End()
-	}
+	o.closeOnce.Do(func() {
+		close(o.closeCh)
+
+		if activeTurn := o.conversation.activeTurn; activeTurn != nil {
+			activeTurn.Cancel()
+		}
+
+		if err := o.stopCapture(); err != nil {
+			log.Printf("Failed to stop audio capture: %v", err)
+		}
+		if o.audioInput != nil {
+			o.audioInput.Close()
+		}
+
+		switch c := o.speechToTextClient.(type) {
+		case interface{ Close() error }:
+			if err := c.Close(); err != nil {
+				log.Printf("Failed to close speech-to-text client: %v", err)
+			}
+		case interface{ Close() }:
+			c.Close()
+		}
+
+		if o.assistantLoopStarted.Load() {
+			<-o.assistantLoopDone
+		}
+	})
 }
 
 // Orchestrate starts the orchestrator that waits for any triggers to respond to
@@ -74,6 +104,11 @@ func (o *Orchestrator) Close() {
 // ctx is used as a base context for any agent and tool calls, allowing for
 // cancellation
 func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOption) {
+	if o.isClosed() {
+		log.Println("Warning: orchestrator already closed, skipping Orchestrate")
+		return
+	}
+
 	o.orchestrateOptions = OrchestrateOptions{}
 	for _, opt := range opts {
 		opt(&o.orchestrateOptions)
@@ -81,9 +116,16 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 
 	o.baseContext = ctx
 
-	o.initSST()
+	o.assistantLoopOnce.Do(func() {
+		o.assistantLoopStarted.Store(true)
+		go o.startAssistantLoop()
+		go func() {
+			<-ctx.Done()
+			o.Close()
+		}()
+	})
 
-	go o.startAssistantLoop()
+	o.initSST()
 	o.initAudioInput()
 }
 
@@ -104,6 +146,15 @@ func (o *Orchestrator) Handle(event llms.EventV0) {
 // for handling prompts that are sure to follow up after the current turn.
 func (o *Orchestrator) QueuePrompt(prompt string) {
 	go o.queueEvent(events.NewUserPromptEvent(prompt))
+}
+
+func (o *Orchestrator) isClosed() bool {
+	select {
+	case <-o.closeCh:
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
