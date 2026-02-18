@@ -6,7 +6,6 @@ import (
 
 	"github.com/koscakluka/ema-core/core/audio"
 	"github.com/koscakluka/ema-core/core/conversations"
-	"github.com/koscakluka/ema-core/core/interruptions"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/speechtotext"
 	"github.com/koscakluka/ema-core/core/texttospeech"
@@ -26,7 +25,7 @@ type LLMWithGeneralPrompt interface {
 
 func WithStreamingLLM(client LLMWithStream) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.llm = client
+		o.runtime.llm.set(client)
 	}
 }
 
@@ -37,7 +36,7 @@ type SpeechToText interface {
 
 func WithSpeechToTextClient(client SpeechToText) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.speechToTextClient = client
+		o.speechToText.set(client)
 	}
 }
 
@@ -49,8 +48,9 @@ type TextToSpeech interface {
 
 func WithTextToSpeechClient(client TextToSpeech) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.textToSpeechClient = client
+		o.runtime.textToSpeech.set(client)
 		o.IsSpeaking = true
+		o.runtime.setSpeaking(true)
 	}
 }
 
@@ -60,15 +60,14 @@ type TextToSpeechV1 interface {
 
 func WithTextToSpeechClientV1(client TextToSpeechV1) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.textToSpeechClient = client
+		o.runtime.textToSpeech.set(client)
 		o.IsSpeaking = true
+		o.runtime.setSpeaking(true)
 	}
 }
 
 type AudioInput interface {
-	EncodingInfo() audio.EncodingInfo
-	Stream(ctx context.Context, onAudio func(audio []byte)) error
-	Close()
+	audioInputBase
 }
 
 type AudioInputFine interface {
@@ -78,41 +77,41 @@ type AudioInputFine interface {
 
 func WithAudioInput(client AudioInput) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.audioInput = client
+		o.audioInput.Set(client)
 	}
 }
 
 type AudioOutputV0 interface {
-	audioOutput
+	audioOutputBase
 	AwaitMark() error
 }
 
 func WithAudioOutputV0(client AudioOutputV0) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.audioOutput = client
+		o.runtime.audioOutput.set(client)
 	}
 }
 
 type AudioOutputV1 interface {
-	audioOutput
+	audioOutputBase
 	Mark(string, func(string)) error
 }
 
 func WithAudioOutputV1(client AudioOutputV1) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.audioOutput = client
+		o.runtime.audioOutput.set(client)
 	}
 }
 
 func WithTools(tools ...llms.Tool) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.tools = tools
+		o.runtime.llm.setTools(tools...)
 	}
 }
 
 func WithOrchestrationTools() OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.tools = append(o.tools, orchestrationTools(o)...)
+		o.runtime.llm.appendTools(orchestrationTools(o)...)
 	}
 }
 
@@ -127,49 +126,6 @@ func WithEventHandlerV0(handler EventHandlerV0) OrchestratorOption {
 			return
 		}
 		o.eventHandler = handler
-	}
-}
-
-type InterruptionHandlerV0 interface {
-	HandleV0(prompt string, turns []llms.Turn, tools []llms.Tool, orchestrator interruptions.OrchestratorV0) error
-}
-
-// Deprecated: use WithEventHandlerV0 instead.
-func WithInterruptionHandlerV0(handler InterruptionHandlerV0) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.defaultEventHandler.interruptionHandlerV0 = handler
-	}
-}
-
-type InterruptionHandlerV1 interface {
-	HandleV1(id int64, orchestrator interruptions.OrchestratorV0, tools []llms.Tool) (*llms.InterruptionV0, error)
-}
-
-// Deprecated: use WithEventHandlerV0 instead.
-func WithInterruptionHandlerV1(handler InterruptionHandlerV1) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.defaultEventHandler.interruptionHandlerV1 = handler
-	}
-}
-
-type InterruptionHandlerV2 interface {
-	HandleV2(ctx context.Context, id int64, orchestrator interruptions.OrchestratorV0, tools []llms.Tool) (*llms.InterruptionV0, error)
-}
-
-// Deprecated: use WithEventHandlerV0 instead.
-func WithInterruptionHandlerV2(handler InterruptionHandlerV2) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.defaultEventHandler.interruptionHandlerV2 = handler
-	}
-}
-
-func WithConfig(config *Config) OrchestratorOption {
-	return func(o *Orchestrator) {
-		if config == nil {
-			return
-		}
-
-		o.config = config
 	}
 }
 
@@ -248,10 +204,16 @@ func WithInputAudioCallback(callback func(audio []byte)) OrchestrateOption {
 
 type LLM any
 
-type audioOutput interface {
+type audioOutputBase interface {
 	EncodingInfo() audio.EncodingInfo
 	SendAudio(audio []byte) error
 	ClearBuffer()
 }
 
-type textToSpeech any
+type audioInputBase interface {
+	EncodingInfo() audio.EncodingInfo
+	Stream(ctx context.Context, onAudio func(audio []byte)) error
+	Close()
+}
+
+type textToSpeechBase any

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"log"
 	"time"
 
 	"github.com/koscakluka/ema-core/core/conversations"
@@ -42,7 +43,7 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 
 	for event, err := range o.eventHandler.HandleV0(ctx, event, &orchestratorActiveContext{
 		conversation: &o.conversation,
-		tools:        o.tools,
+		llm:          &o.runtime.llm,
 	}) {
 		if err != nil {
 			var span trace.Span
@@ -67,7 +68,11 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 		// retries, metrics, or other cross-cutting behavior around event handling.
 		switch t := event.(type) {
 		case events.CancelTurnEvent:
-			o.CancelTurn()
+			o.conversation.cancelActiveTurn()
+		case events.PauseTurnEvent:
+			o.conversation.pauseActiveTurn()
+		case events.UnpauseTurnEvent:
+			o.conversation.unpauseActiveTurn()
 		case events.RecordInterruptionEvent:
 			o.conversation.addInterruptionToActiveTurn(t.Interruption)
 		case events.ResolveInterruptionEvent:
@@ -88,14 +93,16 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 			}
 			return
 		default:
-			o.queueEvent(event)
+			if ok := o.conversation.enqueue(event); !ok {
+				log.Printf("Warning: failed to enqueue event %T", event)
+			}
 		}
 	}
 }
 
 type orchestratorActiveContext struct {
 	conversation *Conversation
-	tools        []llms.Tool
+	llm          *llm
 }
 
 func (c *orchestratorActiveContext) History() []llms.TurnV1 {
@@ -113,12 +120,11 @@ func (c *orchestratorActiveContext) ActiveTurn() *llms.TurnV1 {
 }
 
 func (c *orchestratorActiveContext) AvailableTools() []llms.Tool {
-	if c == nil {
+	if c == nil || c.llm == nil {
 		return nil
 	}
-	tools := make([]llms.Tool, len(c.tools))
-	copy(tools, c.tools)
-	return tools
+
+	return c.llm.availableTools()
 }
 
 type internalEventHandler struct {
@@ -135,7 +141,8 @@ func (h *internalEventHandler) HandleV0(ctx context.Context, event llms.EventV0,
 			return
 		}
 
-		if _, isCallTool := event.(events.CallToolEvent); isCallTool {
+		switch event.(type) {
+		case events.CallToolEvent, events.CancelTurnEvent, events.PauseTurnEvent, events.UnpauseTurnEvent:
 			yield(event, nil)
 			return
 		}

@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"log"
 
 	emaContext "github.com/koscakluka/ema-core/core/context"
 	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
-	"github.com/koscakluka/ema-core/core/speechtotext"
+	"github.com/koscakluka/ema-core/internal/utils"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -22,39 +21,24 @@ type Orchestrator struct {
 
 	conversation Conversation
 
-	eventQueue chan eventQueueItem
-	closeCh    chan struct{}
+	closeOnce sync.Once
+	runtime   *conversationRuntime
 
-	assistantLoopDone    chan struct{}
-	assistantLoopOnce    sync.Once
-	assistantLoopStarted atomic.Bool
-	closeOnce            sync.Once
-
-	tools []llms.Tool
-
-	llm                 LLM
-	speechToTextClient  SpeechToText
-	textToSpeechClient  textToSpeech
-	audioInput          AudioInput
-	audioOutput         audioOutput
+	// speechToText is the STT facade used to handle optional client wiring.
+	speechToText speechToText
+	// audioInput is the input facade used to normalize capture behavior.
+	audioInput          audioInput
 	eventHandler        EventHandlerV0
 	defaultEventHandler internalEventHandler
-
-	orchestrateOptions OrchestrateOptions
-	config             *Config
-
-	baseContext context.Context
+	orchestrateOptions  OrchestrateOptions
+	baseContext         context.Context
 }
 
 func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 	o := &Orchestrator{
-		IsRecording:       false,
-		IsSpeaking:        false,
-		eventQueue:        make(chan eventQueueItem, 10), // TODO: Figure out good valiues for this
-		closeCh:           make(chan struct{}),
-		assistantLoopDone: make(chan struct{}),
-		config:            &Config{AlwaysRecording: true},
-		baseContext:       context.Background(),
+		IsRecording: false,
+		IsSpeaking:  false,
+		baseContext: context.Background(),
 		defaultEventHandler: internalEventHandler{
 			interruptionHandlerV0: nil,
 			interruptionHandlerV1: nil,
@@ -62,8 +46,18 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 			orchestrator:          nil,
 		},
 	}
+	o.audioInput = *newAudioInput(nil, func(audio []byte) {
+		if o.orchestrateOptions.onInputAudio != nil {
+			o.orchestrateOptions.onInputAudio(audio)
+		}
+
+		o.speechToText.SendAudio(audio)
+	})
 	o.defaultEventHandler.orchestrator = o
 	o.eventHandler = &o.defaultEventHandler
+	o.runtime = newConversationRuntime()
+	o.conversation.setRuntime(o.runtime)
+	o.runtime.setSpeaking(o.IsSpeaking)
 
 	for _, opt := range opts {
 		opt(o)
@@ -74,35 +68,23 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 
 func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
-		close(o.closeCh)
+		o.conversation.end()
 
-		o.conversation.cancelActiveTurn()
-
-		if err := o.stopCapture(); err != nil {
-			recordedErr := fmt.Errorf("failed to stop audio capture: %w", err)
+		if err := o.audioInput.Close(); err != nil {
+			recordedErr := fmt.Errorf("failed to close audio input: %w", err)
 			span := trace.SpanFromContext(o.baseContext)
 			span.RecordError(recordedErr)
 			span.SetStatus(codes.Error, recordedErr.Error())
 		}
-		if o.audioInput != nil {
-			o.audioInput.Close()
+
+		if err := o.speechToText.Close(o.baseContext); err != nil {
+			recordedErr := fmt.Errorf("failed to close speech-to-text client: %w", err)
+			span := trace.SpanFromContext(o.baseContext)
+			span.RecordError(recordedErr)
+			span.SetStatus(codes.Error, recordedErr.Error())
 		}
 
-		switch c := o.speechToTextClient.(type) {
-		case interface{ Close() error }:
-			if err := c.Close(); err != nil {
-				recordedErr := fmt.Errorf("failed to close speech-to-text client: %w", err)
-				span := trace.SpanFromContext(o.baseContext)
-				span.RecordError(recordedErr)
-				span.SetStatus(codes.Error, recordedErr.Error())
-			}
-		case interface{ Close() }:
-			c.Close()
-		}
-
-		if o.assistantLoopStarted.Load() {
-			<-o.assistantLoopDone
-		}
+		o.conversation.waitUntilEnded()
 	})
 }
 
@@ -110,8 +92,13 @@ func (o *Orchestrator) Close() {
 //
 // ctx is used as a base context for any agent and tool calls, allowing for
 // cancellation
+//
+// Contract: call Orchestrate at most once per orchestrator instance.
+// Repeated or concurrent calls are unsupported and may race while runtime
+// callbacks/options are being reconfigured.
+// TODO: Enforce this contract with a hard runtime guard (single-start gate).
 func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOption) {
-	if o.isClosed() {
+	if o.runtime.isClosed() {
 		log.Println("Warning: orchestrator already closed, skipping Orchestrate")
 		return
 	}
@@ -122,163 +109,100 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 	}
 
 	o.baseContext = ctx
+	o.runtime.configure(ctx, runtimeCallbacks{
+		onResponse:     o.orchestrateOptions.onResponse,
+		onResponseEnd:  o.orchestrateOptions.onResponseEnd,
+		onAudio:        o.orchestrateOptions.onAudio,
+		onAudioEnded:   o.orchestrateOptions.onAudioEnded,
+		onCancellation: o.orchestrateOptions.onCancellation,
+	})
 
-	o.assistantLoopOnce.Do(func() {
-		o.assistantLoopStarted.Store(true)
-		go o.startAssistantLoop()
+	if started := o.conversation.start(); started {
 		go func() {
 			<-ctx.Done()
 			o.Close()
 		}()
-	})
+	}
 
-	if err := o.initSTT(); err != nil {
+	if err := o.speechToText.start(
+		o.baseContext,
+		speechToTextCallbacks{
+			onSpeechStarted:        func() { go o.respondToEvent(events.NewSpeechStartedEvent()) },
+			onSpeechEnded:          func() { go o.respondToEvent(events.NewSpeechEndedEvent()) },
+			onInterimTranscription: func(transcript string) { go o.respondToEvent(events.NewInterimTranscriptionEvent(transcript)) },
+			onTranscription:        func(transcript string) { go o.respondToEvent(events.NewTranscriptionEvent(transcript)) },
+		},
+		utils.Ptr(o.audioInput.EncodingInfo()),
+	); err != nil {
 		recordedErr := fmt.Errorf("failed to initialize speech-to-text: %w", err)
 		span := trace.SpanFromContext(o.baseContext)
 		span.RecordError(recordedErr)
 		span.SetStatus(codes.Error, recordedErr.Error())
 	}
-	o.initAudioInput()
+	o.audioInput.Start(o.baseContext)
 }
+func (o *Orchestrator) ConversationV0() emaContext.ConversationV0 { return &o.conversation }
 
-func (o *Orchestrator) SendPrompt(prompt string) {
-	o.respondToEvent(events.NewUserPromptEvent(prompt))
-}
+func (o *Orchestrator) IsAlwaysRecording() bool { return o.audioInput.IsAlwaysRecording() }
+func (o *Orchestrator) SetAlwaysRecording(isAlwaysRecording bool) {
+	var err error
+	if isAlwaysRecording {
+		err = o.EnableAlwaysRecording(o.baseContext)
+	} else {
+		err = o.DisableAlwaysRecording(o.baseContext)
+	}
 
-func (o *Orchestrator) SendAudio(audio []byte) error {
-	return o.sendAudio(audio)
-}
-
-func (o *Orchestrator) Handle(event llms.EventV0) {
-	o.respondToEvent(event)
-}
-
-// QueuePrompt immediately queues the prompt for processing after the current
-// turn is finished. It bypasses the normal processing pipeline and can be useful
-// for handling prompts that are sure to follow up after the current turn.
-func (o *Orchestrator) QueuePrompt(prompt string) {
-	go o.queueEvent(events.NewUserPromptEvent(prompt))
-}
-
-func (o *Orchestrator) isClosed() bool {
-	select {
-	case <-o.closeCh:
-		return true
-	default:
-		return false
+	if err != nil {
+		recordedErr := fmt.Errorf("failed to set always recording to %t: %w", isAlwaysRecording, err)
+		span := trace.SpanFromContext(o.baseContext)
+		span.RecordError(recordedErr)
+		span.SetStatus(codes.Error, recordedErr.Error())
 	}
 }
+
+func (o *Orchestrator) EnableAlwaysRecording(ctx context.Context) error {
+	return o.audioInput.EnableAlwaysCapture(ctx)
+}
+
+func (o *Orchestrator) DisableAlwaysRecording(ctx context.Context) error {
+	return o.audioInput.DisableAlwaysCapture(ctx)
+}
+
+func (o *Orchestrator) Handle(event llms.EventV0) { o.respondToEvent(event) }
+func (o *Orchestrator) SendPrompt(prompt string)  { o.respondToEvent(events.NewUserPromptEvent(prompt)) }
+func (o *Orchestrator) CancelTurn()               { o.respondToEvent(events.NewCancelTurnEvent()) }
+func (o *Orchestrator) PauseTurn()                { o.respondToEvent(events.NewPauseTurnEvent()) }
+func (o *Orchestrator) UnpauseTurn()              { o.respondToEvent(events.NewUnpauseTurnEvent()) }
+
+func (o *Orchestrator) SendAudio(audio []byte) error { return o.speechToText.SendAudio(audio) }
 
 func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
 	o.IsSpeaking = isSpeaking
+	o.runtime.setSpeaking(isSpeaking)
 	if !isSpeaking {
 		o.conversation.stopSpeakingActiveTurn()
-	}
-	if o.audioOutput != nil {
-		o.audioOutput.ClearBuffer()
-	}
-}
-
-func (o *Orchestrator) IsAlwaysRecording() bool {
-	return o.config.AlwaysRecording
-}
-
-func (o *Orchestrator) SetAlwaysRecording(isAlwaysRecording bool) {
-	o.config.AlwaysRecording = isAlwaysRecording
-
-	if isAlwaysRecording {
-		go func() {
-			if err := o.startCapture(); err != nil {
-				recordedErr := fmt.Errorf("failed to start audio input: %w", err)
-				span := trace.SpanFromContext(o.baseContext)
-				span.RecordError(recordedErr)
-				span.SetStatus(codes.Error, recordedErr.Error())
-			}
-		}()
-	} else if !o.IsRecording {
-		if err := o.stopCapture(); err != nil {
-			recordedErr := fmt.Errorf("failed to stop audio input: %w", err)
-			span := trace.SpanFromContext(o.baseContext)
-			span.RecordError(recordedErr)
-			span.SetStatus(codes.Error, recordedErr.Error())
-		}
 	}
 }
 
 func (o *Orchestrator) StartRecording() error {
 	o.IsRecording = true
-
-	if o.config.AlwaysRecording {
-		return nil
-	}
-
-	return o.startCapture()
+	return o.audioInput.RequestCapture(o.baseContext)
 }
 
 func (o *Orchestrator) StopRecording() error {
 	o.IsRecording = false
-	if o.config.AlwaysRecording {
-		return nil
-	}
-
-	return o.stopCapture()
-}
-
-func (o *Orchestrator) ConversationV0() emaContext.ConversationV0 {
-	return &o.conversation
+	return o.audioInput.ReleaseCapture(o.baseContext)
 }
 
 func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
 	ctx, span := tracer.Start(ctx, "call tool with prompt")
 	defer span.End()
-	history := o.conversation.historySnapshot()
-
-	switch o.llm.(type) {
-	case LLMWithStream:
-		_, err := o.processStreaming(ctx, events.NewUserPromptEvent(prompt), history, newTextBuffer())
-		return err
-
-	case LLMWithPrompt:
-		_, err := o.processPromptOld(ctx, events.NewUserPromptEvent(prompt), history, newTextBuffer())
-		return err
-
-	default:
-		// Impossible state technically
-		return fmt.Errorf("unknown LLM type")
-	}
-
-}
-
-func (o *Orchestrator) CancelTurn()  { o.conversation.cancelActiveTurn() }
-func (o *Orchestrator) PauseTurn()   { o.conversation.pauseActiveTurn() }
-func (o *Orchestrator) UnpauseTurn() { o.conversation.unpauseActiveTurn() }
-
-func (o *Orchestrator) initSTT() error {
-	if o.speechToTextClient == nil {
-		return nil
-	}
-
-	sttOptions := []speechtotext.TranscriptionOption{
-		speechtotext.WithSpeechStartedCallback(func() {
-			go o.respondToEvent(events.NewSpeechStartedEvent())
-		}),
-		speechtotext.WithSpeechEndedCallback(func() {
-			go o.respondToEvent(events.NewSpeechEndedEvent())
-		}),
-		speechtotext.WithInterimTranscriptionCallback(func(transcript string) {
-			go o.respondToEvent(events.NewInterimTranscriptionEvent(transcript))
-		}),
-		speechtotext.WithTranscriptionCallback(func(transcript string) {
-			go o.respondToEvent(events.NewTranscriptionEvent(transcript))
-		}),
-	}
-	if o.audioInput != nil {
-		sttOptions = append(sttOptions, speechtotext.WithEncodingInfo(o.audioInput.EncodingInfo()))
-	}
-
-	if err := o.speechToTextClient.Transcribe(o.baseContext, sttOptions...); err != nil {
-		return fmt.Errorf("failed to start transcribing: %w", err)
-	}
-
-	return nil
+	_, err := o.runtime.llm.generate(
+		ctx,
+		events.NewUserPromptEvent(prompt),
+		o.conversation.historySnapshot(),
+		newTextBuffer(),
+		func() bool { return o.conversation.activeTurnCancelled() },
+	)
+	return err
 }

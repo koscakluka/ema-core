@@ -2,8 +2,6 @@ package orchestration
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"slices"
 	"sync"
 
@@ -16,6 +14,7 @@ type Conversation struct {
 	turns []llms.TurnV1
 
 	activeTurn *activeTurn
+	runtime    *conversationRuntime
 }
 
 func (t *Conversation) historySnapshot() []llms.TurnV1 {
@@ -283,94 +282,4 @@ func (t *Conversation) updateInterruption(id int64, update func(*llms.Interrupti
 			}
 		}
 	}
-}
-
-func (t *Conversation) processActiveTurn(ctx context.Context, event llms.EventV0, components activeTurnComponents, callbacks activeTurnCallbacks, config activeTurnConfig) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var workerErr error
-	workerErrMu := sync.Mutex{}
-	addWorkerErr := func(err error) {
-		if err == nil {
-			return
-		}
-		workerErrMu.Lock()
-		workerErr = errors.Join(workerErr, err)
-		workerErrMu.Unlock()
-	}
-
-	t.mu.Lock()
-	if t.activeTurn != nil {
-		t.mu.Unlock()
-		return fmt.Errorf("active turn already set")
-	}
-
-	activeTurn := newActiveTurn(ctx, event, components, callbacks, config)
-	history := make([]llms.TurnV1, len(t.turns))
-	copy(history, t.turns)
-	t.activeTurn = activeTurn
-	t.mu.Unlock()
-
-	run := func(name string, f func(context.Context) error) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				addWorkerErr(fmt.Errorf("%s worker panicked: %v", name, recovered))
-				cancel()
-			}
-		}()
-
-		if err := f(ctx); err != nil {
-			addWorkerErr(fmt.Errorf("%s worker failed: %w", name, err))
-			cancel()
-		}
-	}
-
-	wg := &sync.WaitGroup{}
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		run("response generation", func(ctx context.Context) error {
-			return activeTurn.generateResponse(ctx, history)
-		})
-	}()
-	go func() {
-		defer wg.Done()
-		run("response text processing", activeTurn.processResponseText)
-	}()
-	go func() {
-		defer wg.Done()
-		run("speech processing", activeTurn.processSpeech)
-	}()
-
-	wg.Wait()
-
-	finaliseErr := func() (err error) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				err = fmt.Errorf("active turn finalise panicked: %v", recovered)
-			}
-		}()
-		activeTurn.Finalise()
-
-		activeTurnIDMismatch, activeTurnMissing := t.finaliseActiveTurn(activeTurn.TurnV1)
-		if activeTurnIDMismatch {
-			addWorkerErr(fmt.Errorf("active turn finalisation failed: turn IDs do not match"))
-		}
-		if activeTurnMissing {
-			addWorkerErr(fmt.Errorf("active turn finalisation failed: active turn missing"))
-		}
-
-		if callbacks.OnFinalise != nil {
-			callbacks.OnFinalise(activeTurn)
-		}
-		return nil
-	}()
-	addWorkerErr(finaliseErr)
-
-	if workerErr != nil {
-		return fmt.Errorf("one or more active turn processes failed: %w", workerErr)
-	}
-
-	return nil
 }

@@ -2,84 +2,196 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"log"
+	"sync/atomic"
+
+	"github.com/koscakluka/ema-core/core/audio"
 )
 
-// initAudioCapture initializes and start audio capture if it makes sense
-// (i.e. if we have a capture and speech to text client, and necessary settings
-// are set)
-func (o *Orchestrator) initAudioInput() {
-	if o.audioInput != nil && o.speechToTextClient != nil {
-		switch o.audioInput.(type) {
-		case AudioInputFine:
-			if o.config.AlwaysRecording {
-				go func() {
-					if err := o.startCapture(); err != nil {
-						log.Printf("Failed to start audio input: %v", err)
-					}
-				}()
-			}
-		default:
-			go o.captureAudio(context.TODO())
-		}
-	} else if o.audioInput != nil && o.speechToTextClient == nil {
-		log.Println("Warning: skip starting input audio stream: audio input set but speech to text client is not set")
+type audioInput struct {
+	// base stores the configured input client used for streaming audio.
+	base audioInputBase
+	// fineCaptureControle is set when the input client supports explicit capture controls.
+	fineCaptureControle AudioInputFine
+
+	// connected reports whether a concrete input client is currently configured.
+	connected atomic.Bool
+	// isCapturing reports whether the input client is currently capturing audio.
+	isCapturing atomic.Bool
+
+	// alwaysCapture keeps capture running continuously when control APIs exist.
+	alwaysCapture atomic.Bool
+	// shouldCapture reports whether the input client should be capturing audio.
+	shouldCapture atomic.Bool
+
+	// onInputAudio is called when input audio is received
+	onInputAudio func(audio []byte)
+}
+
+func newAudioInput(client audioInputBase, onInputAudio func(audio []byte)) *audioInput {
+	if onInputAudio == nil {
+		onInputAudio = func(audio []byte) {}
+	}
+
+	audioInput := audioInput{onInputAudio: onInputAudio}
+	audioInput.alwaysCapture.Store(true)
+	audioInput.Set(client)
+	return &audioInput
+}
+
+func (a *audioInput) Set(client audioInputBase) {
+	if a == nil {
+		return
+	}
+
+	a.base = client
+	a.fineCaptureControle = nil
+	a.connected.Store(false)
+	a.isCapturing.Store(false)
+
+	if client == nil {
+		return
+	}
+
+	a.connected.Store(true)
+	if fine, ok := client.(AudioInputFine); ok {
+		a.fineCaptureControle = fine
 	}
 }
 
-// sendAudio sends audio to the speech to text client if one is set
-func (o *Orchestrator) sendAudio(audio []byte) error {
-	if o.orchestrateOptions.onInputAudio != nil {
-		o.orchestrateOptions.onInputAudio(audio)
-	}
+func (a *audioInput) IsConfigured() bool            { return a != nil && a.connected.Load() }
+func (a *audioInput) SupportsCaptureControls() bool { return a != nil && a.fineCaptureControle != nil }
+func (a *audioInput) IsAlwaysRecording() bool       { return a == nil || a.alwaysCapture.Load() } // defaults to true
+func (a *audioInput) IsCapturing() bool             { return a != nil && a.isCapturing.Load() }
+func (a *audioInput) ShouldCapture() bool           { return a != nil && a.shouldCapture.Load() }
 
-	if o.speechToTextClient == nil {
-		log.Println("Warning: SendAudio called but speech to text client is not set")
+func (a *audioInput) EnableAlwaysCapture(ctx context.Context) error {
+	if a == nil {
 		return nil
 	}
 
-	if o.IsRecording || o.config.AlwaysRecording {
-		return o.speechToTextClient.SendAudio(audio)
-	}
-
-	return nil
+	a.alwaysCapture.Store(true)
+	return a.Capture(ctx)
 }
 
-// startCapture start the audio capture for AudioInputFine, does nothing
-// if AudioInputFine interface is not satisfied
-func (o *Orchestrator) startCapture() error {
-	if fineAudioInput, ok := o.audioInput.(AudioInputFine); ok {
-		if err := fineAudioInput.StartCapture(context.TODO(), func(audio []byte) {
-			if err := o.SendAudio(audio); err != nil {
-				log.Printf("Failed to send audio to speech to text client: %v", err)
+func (a *audioInput) DisableAlwaysCapture(context.Context) error {
+	if a == nil {
+		return nil
+	}
+
+	a.alwaysCapture.Store(false)
+	return a.StopCapture()
+}
+
+func (a *audioInput) RequestCapture(ctx context.Context) error {
+	if a == nil {
+		return nil
+	}
+
+	a.shouldCapture.Store(true)
+	return a.Capture(ctx)
+}
+
+func (a *audioInput) ReleaseCapture(context.Context) error {
+	if a == nil {
+		return nil
+	}
+
+	a.shouldCapture.Store(false)
+	return a.StopCapture()
+}
+
+func (a *audioInput) Start(ctx context.Context) {
+	if a.IsConfigured() {
+		a.Capture(ctx)
+	}
+}
+
+func (a *audioInput) Capture(ctx context.Context) error {
+	if a == nil {
+		return nil
+	}
+
+	if !a.isCapturing.CompareAndSwap(false, true) {
+		return nil
+	}
+
+	if a.SupportsCaptureControls() {
+		if a.IsAlwaysRecording() || a.ShouldCapture() {
+			go func() {
+				if err := a.fineCaptureControle.StartCapture(ctx, a.onAudio); err != nil {
+					a.isCapturing.Store(false)
+					// TODO: Find a way to propagate this error
+					log.Printf("Failed to start audio input: %v", err)
+				}
+			}()
+			return nil
+		}
+
+		a.isCapturing.Store(false)
+		return nil
+	}
+
+	if a.base != nil {
+		go func() {
+			if err := a.base.Stream(ctx, a.onAudio); err != nil {
+				a.isCapturing.Store(false)
+				// TODO: Find a way to propagate this error
+				log.Printf("Failed to start audio input: %v", err)
 			}
-		}); err != nil {
+		}()
+		return nil
+	}
+
+	a.isCapturing.Store(false)
+	return nil
+}
+
+func (a *audioInput) Close() error {
+	var errs error
+	if a.base != nil && a.IsConfigured() {
+		if a.fineCaptureControle != nil {
+			if err := a.fineCaptureControle.StopCapture(); err != nil {
+				errs = errors.Join(errs, err)
+			}
+		}
+
+		a.base.Close()
+	}
+	a.isCapturing.Store(false)
+
+	return errs
+}
+
+func (a *audioInput) StopCapture() error {
+	if a.SupportsCaptureControls() {
+		if a.IsAlwaysRecording() || a.ShouldCapture() {
+			return nil
+		}
+
+		if err := a.fineCaptureControle.StopCapture(); err != nil {
 			return err
 		}
+		a.isCapturing.Store(false)
+		return nil
 	}
 
 	return nil
 }
 
-// stopCapture stops the audio capture for AudioInputFine, does nothing
-// if AudioInputFine interface is not satisfied
-func (o *Orchestrator) stopCapture() error {
-	if fineAudioInput, ok := o.audioInput.(AudioInputFine); ok {
-		if err := fineAudioInput.StopCapture(); err != nil {
-			return err
-		}
+func (a *audioInput) EncodingInfo() audio.EncodingInfo {
+	if a == nil || a.base == nil {
+		return audio.GetDefaultEncodingInfo()
 	}
-	return nil
+
+	return a.base.EncodingInfo()
 }
 
-// streamInputAudio captures the audio from the audio input and sends it to the
-// speech to text client
-func (o *Orchestrator) captureAudio(ctx context.Context) {
-	if err := o.audioInput.Stream(ctx, func(audio []byte) {
-		if err := o.SendAudio(audio); err != nil {
-			log.Printf("Failed to send audio to speech to text client: %v", err)
-		}
-	}); err != nil {
-		log.Printf("Failed to start audio input streaming: %v", err)
+func (a *audioInput) onAudio(audio []byte) {
+	if !a.IsAlwaysRecording() && !a.ShouldCapture() {
+		return
 	}
+
+	a.onInputAudio(audio)
 }

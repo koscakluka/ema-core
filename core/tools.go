@@ -1,7 +1,12 @@
 package orchestration
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/koscakluka/ema-core/core/llms"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 func orchestrationTools(o *Orchestrator) []llms.Tool {
@@ -27,4 +32,43 @@ func orchestrationTools(o *Orchestrator) []llms.Tool {
 				return "Success. Respond with a very short phrase", nil
 			}),
 	}
+}
+
+func (o *Orchestrator) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms.ToolCall, error) {
+	return o.runtime.llm.callTool(ctx, toolCall)
+}
+
+func (runtime *llm) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms.ToolCall, error) {
+	toolName := toolCall.Name
+	toolArguments := toolCall.Arguments
+	if toolCall.Name == "" {
+		toolName = toolCall.Function.Name
+	}
+	if toolCall.Arguments == "" {
+		toolArguments = toolCall.Function.Arguments
+	}
+
+	ctx, span := tracer.Start(ctx, "execute tool")
+	defer span.End()
+	span.SetAttributes(attribute.String("tool.name", toolName))
+	for _, tool := range runtime.tools {
+		if tool.Function.Name == toolName {
+			resp, err := tool.Execute(toolArguments)
+			if err != nil {
+				err = fmt.Errorf("failed to execute tool %q: %w", toolName, err)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return nil, err
+			}
+			return &llms.ToolCall{
+				ID:       toolCall.ID,
+				Response: resp,
+			}, nil
+		}
+	}
+
+	err := fmt.Errorf("tool not found: %s", toolName)
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+	return nil, err
 }

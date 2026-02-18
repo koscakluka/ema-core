@@ -24,11 +24,18 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `core/WithInterruptionHandlerV0`, `core/WithInterruptionHandlerV1`, and
   `core/WithInterruptionHandlerV2` in favor of `core/WithEventHandlerV0`
+- `core/Config` and `core/WithConfig`; use `core/Orchestrator.SetAlwaysRecording`
+  for recording behavior instead
 
 ### Changed
 
 - interruption handling now runs through the event-handler pipeline, so custom
   handlers can influence turn cancellation, continuation prompts, and tool calls
+- orchestrator event queue lifecycle is now conversation-owned via internal
+  conversation start/end runtime helpers, replacing assistant-loop-specific
+  orchestrator loop state while preserving single-consumer turn sequencing
+- orchestrator always-recording state now lives in audio-input runtime state
+  instead of shared orchestrator config pointers
 
 ### Fixed
 
@@ -59,6 +66,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   from assistant-loop callbacks and control paths
 - cancel-turn events now bypass interruption classification in built-in handlers,
   ensuring turn cancellation requests are not swallowed while a turn is active
+- prompts queued before `Orchestrate` now remain buffered until runtime starts,
+  and failed enqueue attempts are surfaced via warnings instead of silent drops
+- `SetSpeaking(true)` no longer stops the active turn's speech pipeline
+- LLM-dependent orchestration paths now return explicit `ErrLLMNotConfigured`
+  errors when no LLM client is configured
 
 ## [v0.0.16] - 2026-02-16
 
