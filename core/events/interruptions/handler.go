@@ -30,7 +30,8 @@ func (h *EventHandler) HandleV0(ctx context.Context, event llms.EventV0, convers
 			return
 		}
 
-		if _, isCallTool := event.(coreevents.CallToolEvent); isCallTool {
+		switch event.(type) {
+		case coreevents.CallToolEvent, coreevents.CancelTurnEvent, coreevents.PauseTurnEvent, coreevents.UnpauseTurnEvent:
 			yield(event, nil)
 			return
 		}

@@ -57,6 +57,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - conversation state access and active-turn lifecycle finalization now run through
   synchronized conversation-owned helpers, reducing race-prone direct mutation
   from assistant-loop callbacks and control paths
+- cancel-turn events now bypass interruption classification in built-in handlers,
+  ensuring turn cancellation requests are not swallowed while a turn is active
 
 ## [v0.0.16] - 2026-02-16
 
