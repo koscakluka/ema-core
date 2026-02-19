@@ -84,7 +84,7 @@ type LLMWithPrompt interface {
 // Deprecated: (since v0.0.13) use WithAudioOutputV0 instead, we want to free up this option
 func WithAudioOutput(client AudioOutputV0) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.runtime.audioOutput.set(client)
+		o.runtime.audioOutput.Set(client)
 	}
 }
 

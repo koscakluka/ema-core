@@ -44,7 +44,7 @@ func newActiveTurn(
 	event llms.EventV0,
 	llm *llm,
 	textToSpeechClient textToSpeechBase,
-	audioOutputClient audioOutputBase,
+	audioOutput audioOutput,
 	isSpeaking bool,
 	onResponseText func(string),
 	onResponseTextEnd func(),
@@ -68,8 +68,6 @@ func newActiveTurn(
 		onCancel = func() {}
 	}
 
-	audioOutput := newAudioOutput(audioOutputClient)
-
 	return &activeTurn{
 		TurnV1: llms.TurnV1{
 			ID:    uuid.NewString(),
@@ -79,7 +77,7 @@ func newActiveTurn(
 		ctx:                 ctx,
 		textBuffer:          *newTextBuffer(),
 		audioBuffer:         *newAudioBuffer(audioOutput.EncodingInfo()),
-		audioOutput:         *audioOutput,
+		audioOutput:         audioOutput,
 		textToSpeech:        *newTextToSpeech(textToSpeechClient),
 		llm:                 llm,
 		isSpeaking:          isSpeaking,

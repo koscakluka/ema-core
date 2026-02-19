@@ -36,6 +36,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   orchestrator loop state while preserving single-consumer turn sequencing
 - orchestrator always-recording state now lives in audio-input runtime state
   instead of shared orchestrator config pointers
+- active turns now snapshot the configured audio-output facade at turn start, so
+  runtime client reconfiguration does not alter in-flight turn output behavior
 
 ### Fixed
 

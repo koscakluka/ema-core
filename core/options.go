@@ -88,7 +88,7 @@ type AudioOutputV0 interface {
 
 func WithAudioOutputV0(client AudioOutputV0) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.runtime.audioOutput.set(client)
+		o.runtime.audioOutput.Set(client)
 	}
 }
 
@@ -99,7 +99,7 @@ type AudioOutputV1 interface {
 
 func WithAudioOutputV1(client AudioOutputV1) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.runtime.audioOutput.set(client)
+		o.runtime.audioOutput.Set(client)
 	}
 }
 

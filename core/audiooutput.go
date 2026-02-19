@@ -20,11 +20,11 @@ type audioOutput struct {
 
 func newAudioOutput(client audioOutputBase) *audioOutput {
 	audioOutput := audioOutput{}
-	audioOutput.set(client)
+	audioOutput.Set(client)
 	return &audioOutput
 }
 
-func (a *audioOutput) set(client audioOutputBase) {
+func (a *audioOutput) Set(client audioOutputBase) {
 	if a == nil {
 		return
 	}
@@ -54,12 +54,12 @@ func (a *audioOutput) set(client audioOutputBase) {
 	}
 }
 
-func (a *audioOutput) client() audioOutputBase {
+func (a *audioOutput) Snapshot() audioOutput {
 	if a == nil {
-		return nil
+		return audioOutput{}
 	}
 
-	return a.base
+	return *newAudioOutput(a.base)
 }
 
 func (a *audioOutput) SendAudio(audio []byte) {

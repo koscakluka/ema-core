@@ -236,7 +236,7 @@ func (runtime *conversationRuntime) processActiveTurn(
 		event,
 		&runtime.llm,
 		runtime.textToSpeech.client(),
-		runtime.audioOutput.client(),
+		runtime.audioOutput.Snapshot(),
 		isSpeaking,
 		runtime.callbacks.onResponse,
 		runtime.callbacks.onResponseEnd,
