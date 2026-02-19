@@ -86,98 +86,6 @@ func (runtime *conversationRuntime) speakingEnabled() bool {
 	return runtime.speaking.Load()
 }
 
-func (t *Conversation) setRuntime(runtime *conversationRuntime) *conversationRuntime {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.runtime == nil {
-		t.runtime = runtime
-	}
-	return t.runtime
-}
-
-func (t *Conversation) runtimeSnapshot() *conversationRuntime {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.runtime
-}
-
-func (t *Conversation) start() (started bool) {
-	runtime := t.runtimeSnapshot()
-	if runtime == nil || runtime.isClosed() {
-		return false
-	}
-
-	runtime.startOnce.Do(func() {
-		if runtime.isClosed() {
-			return
-		}
-
-		started = true
-		runtime.started.Store(true)
-		go func() {
-			defer close(runtime.done)
-
-			for {
-				select {
-				case <-runtime.closeCh:
-					return
-				case queuedEvent := <-runtime.queue:
-					if runtime.isClosed() {
-						return
-					}
-					runtime.processQueuedEvent(t, queuedEvent)
-				}
-			}
-		}()
-	})
-
-	return started
-}
-
-func (t *Conversation) end() {
-	runtime := t.runtimeSnapshot()
-	if runtime == nil {
-		return
-	}
-
-	runtime.endOnce.Do(func() {
-		close(runtime.closeCh)
-		t.cancelActiveTurn()
-	})
-}
-
-func (t *Conversation) waitUntilEnded() {
-	runtime := t.runtimeSnapshot()
-	if runtime == nil {
-		return
-	}
-
-	if runtime.started.Load() {
-		<-runtime.done
-	}
-}
-
-func (t *Conversation) enqueue(event llms.EventV0) bool {
-	runtime := t.runtimeSnapshot()
-	if runtime == nil {
-		// TODO: Decide what to do with events queued before runtime starts.
-		return false
-	}
-
-	if runtime.isClosed() {
-		return false
-	}
-
-	queueItem := eventQueueItem{event: event, queuedAt: time.Now()}
-	select {
-	case <-runtime.closeCh:
-		return false
-	case runtime.queue <- queueItem:
-		return true
-	}
-}
-
 func (runtime *conversationRuntime) isClosed() bool {
 	if runtime == nil {
 		return false
@@ -201,7 +109,7 @@ func (runtime *conversationRuntime) queuedEventCount() int {
 
 func (runtime *conversationRuntime) processActiveTurn(
 	ctx context.Context,
-	conversation *Conversation,
+	conversation *activeConversation,
 	event llms.EventV0,
 	onFinalise func(*activeTurn),
 ) error {
@@ -314,7 +222,7 @@ func (runtime *conversationRuntime) processActiveTurn(
 	return nil
 }
 
-func (runtime *conversationRuntime) processQueuedEvent(conversation *Conversation, queuedEvent eventQueueItem) {
+func (runtime *conversationRuntime) processQueuedEvent(conversation *activeConversation, queuedEvent eventQueueItem) {
 	if runtime == nil || conversation == nil {
 		return
 	}

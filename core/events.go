@@ -15,7 +15,7 @@ import (
 
 func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 	ctx := o.baseContext
-	if activeTurnCtx := o.conversation.activeTurnContext(); activeTurnCtx != nil {
+	if activeTurnCtx := o.conversation.ActiveTurnContext(); activeTurnCtx != nil {
 		ctx = activeTurnCtx
 	}
 
@@ -41,13 +41,10 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 		}
 	}
 
-	for event, err := range o.eventHandler.HandleV0(ctx, event, &orchestratorActiveContext{
-		conversation: &o.conversation,
-		llm:          &o.runtime.llm,
-	}) {
+	for event, err := range o.eventHandler.HandleV0(ctx, event, &o.conversation) {
 		if err != nil {
 			var span trace.Span
-			if activeTurnCtx := o.conversation.activeTurnContext(); activeTurnCtx != nil {
+			if activeTurnCtx := o.conversation.ActiveTurnContext(); activeTurnCtx != nil {
 				span = trace.SpanFromContext(activeTurnCtx)
 			} else {
 				span = trace.SpanFromContext(o.baseContext)
@@ -68,7 +65,7 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 		// retries, metrics, or other cross-cutting behavior around event handling.
 		switch t := event.(type) {
 		case events.CancelTurnEvent:
-			o.conversation.cancelActiveTurn()
+			o.conversation.CancelActiveTurn()
 		case events.PauseTurnEvent:
 			o.conversation.pauseActiveTurn()
 		case events.UnpauseTurnEvent:
@@ -93,38 +90,11 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 			}
 			return
 		default:
-			if ok := o.conversation.enqueue(event); !ok {
+			if ok := o.conversation.Enqueue(event); !ok {
 				log.Printf("Warning: failed to enqueue event %T", event)
 			}
 		}
 	}
-}
-
-type orchestratorActiveContext struct {
-	conversation *Conversation
-	llm          *llm
-}
-
-func (c *orchestratorActiveContext) History() []llms.TurnV1 {
-	if c == nil || c.conversation == nil {
-		return nil
-	}
-	return c.conversation.historySnapshot()
-}
-
-func (c *orchestratorActiveContext) ActiveTurn() *llms.TurnV1 {
-	if c == nil || c.conversation == nil {
-		return nil
-	}
-	return c.conversation.activeTurnSnapshot()
-}
-
-func (c *orchestratorActiveContext) AvailableTools() []llms.Tool {
-	if c == nil || c.llm == nil {
-		return nil
-	}
-
-	return c.llm.availableTools()
 }
 
 type internalEventHandler struct {

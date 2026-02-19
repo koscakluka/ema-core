@@ -4,11 +4,15 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"time"
 
+	"github.com/koscakluka/ema-core/core/conversations"
 	"github.com/koscakluka/ema-core/core/llms"
 )
 
-type Conversation struct {
+var _ conversations.ActiveContextV0 = (*activeConversation)(nil)
+
+type activeConversation struct {
 	mu sync.RWMutex
 
 	turns []llms.TurnV1
@@ -17,7 +21,41 @@ type Conversation struct {
 	runtime    *conversationRuntime
 }
 
-func (t *Conversation) historySnapshot() []llms.TurnV1 {
+func newConversation(runtime *conversationRuntime) activeConversation {
+	return activeConversation{runtime: runtime}
+}
+
+// ConversationV1 is a point-in-time view of conversation state.
+type ConversationV1 struct {
+	History        []llms.TurnV1
+	ActiveTurn     *llms.TurnV1
+	AvailableTools []llms.Tool
+}
+
+func (t *activeConversation) Snapshot() ConversationV1 {
+	t.mu.RLock()
+
+	turns := make([]llms.TurnV1, len(t.turns))
+	copy(turns, t.turns)
+
+	var activeTurn *llms.TurnV1
+	if t.activeTurn != nil {
+		snapshot := t.activeTurn.TurnV1
+		activeTurn = &snapshot
+	}
+
+	runtime := t.runtime
+	t.mu.RUnlock()
+
+	var tools []llms.Tool
+	if runtime != nil {
+		tools = runtime.llm.availableTools()
+	}
+
+	return ConversationV1{History: turns, ActiveTurn: activeTurn, AvailableTools: tools}
+}
+
+func (t *activeConversation) History() []llms.TurnV1 {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -26,7 +64,7 @@ func (t *Conversation) historySnapshot() []llms.TurnV1 {
 	return history
 }
 
-func (t *Conversation) activeTurnSnapshot() *llms.TurnV1 {
+func (t *activeConversation) ActiveTurn() *llms.TurnV1 {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -38,22 +76,26 @@ func (t *Conversation) activeTurnSnapshot() *llms.TurnV1 {
 	return &snapshot
 }
 
-func (t *Conversation) activeTurnContext() context.Context {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	if t.activeTurn == nil {
+func (t *activeConversation) AvailableTools() []llms.Tool {
+	runtime := t.runtimeSnapshot()
+	if runtime == nil {
 		return nil
 	}
 
-	return t.activeTurn.ctx
+	return runtime.llm.availableTools()
 }
 
-func (t *Conversation) activeTurnCancelled() bool {
-	t.mu.RLock()
-	activeTurn := t.activeTurn
-	t.mu.RUnlock()
+func (t *activeConversation) ActiveTurnContext() context.Context {
+	activeTurn := t.activeTurnRef()
+	if activeTurn == nil {
+		return nil
+	}
 
+	return activeTurn.ctx
+}
+
+func (t *activeConversation) IsActiveTurnCancelled() bool {
+	activeTurn := t.activeTurnRef()
 	if activeTurn == nil {
 		return false
 	}
@@ -61,11 +103,8 @@ func (t *Conversation) activeTurnCancelled() bool {
 	return activeTurn.IsCancelled()
 }
 
-func (t *Conversation) cancelActiveTurn() bool {
-	t.mu.RLock()
-	activeTurn := t.activeTurn
-	t.mu.RUnlock()
-
+func (t *activeConversation) CancelActiveTurn() bool {
+	activeTurn := t.activeTurnRef()
 	if activeTurn == nil || activeTurn.IsCancelled() {
 		return false
 	}
@@ -74,11 +113,8 @@ func (t *Conversation) cancelActiveTurn() bool {
 	return true
 }
 
-func (t *Conversation) pauseActiveTurn() bool {
-	t.mu.RLock()
-	activeTurn := t.activeTurn
-	t.mu.RUnlock()
-
+func (t *activeConversation) pauseActiveTurn() bool {
+	activeTurn := t.activeTurnRef()
 	if activeTurn == nil {
 		return false
 	}
@@ -87,11 +123,8 @@ func (t *Conversation) pauseActiveTurn() bool {
 	return true
 }
 
-func (t *Conversation) unpauseActiveTurn() bool {
-	t.mu.RLock()
-	activeTurn := t.activeTurn
-	t.mu.RUnlock()
-
+func (t *activeConversation) unpauseActiveTurn() bool {
+	activeTurn := t.activeTurnRef()
 	if activeTurn == nil {
 		return false
 	}
@@ -100,11 +133,8 @@ func (t *Conversation) unpauseActiveTurn() bool {
 	return true
 }
 
-func (t *Conversation) stopSpeakingActiveTurn() bool {
-	t.mu.RLock()
-	activeTurn := t.activeTurn
-	t.mu.RUnlock()
-
+func (t *activeConversation) stopSpeakingActiveTurn() bool {
+	activeTurn := t.activeTurnRef()
 	if activeTurn == nil {
 		return false
 	}
@@ -113,7 +143,7 @@ func (t *Conversation) stopSpeakingActiveTurn() bool {
 	return true
 }
 
-func (t *Conversation) addInterruptionToActiveTurn(interruption llms.InterruptionV0) bool {
+func (t *activeConversation) addInterruptionToActiveTurn(interruption llms.InterruptionV0) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -125,7 +155,7 @@ func (t *Conversation) addInterruptionToActiveTurn(interruption llms.Interruptio
 	return true
 }
 
-func (t *Conversation) finaliseActiveTurn(finalisedTurn llms.TurnV1) (activeTurnIDMismatch bool, activeTurnMissing bool) {
+func (t *activeConversation) finaliseActiveTurn(finalisedTurn llms.TurnV1) (activeTurnIDMismatch bool, activeTurnMissing bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -144,126 +174,7 @@ func (t *Conversation) finaliseActiveTurn(finalisedTurn llms.TurnV1) (activeTurn
 	return false, false
 }
 
-func (t *Conversation) appendTurns(turns ...llms.TurnV1) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.turns = append(t.turns, turns...)
-}
-
-// Pop removes the last turn from the stored turns, returns nil if empty
-func (t *Conversation) Pop() *llms.TurnV1 {
-	t.mu.Lock()
-	if activeTurn := t.activeTurn; activeTurn != nil {
-		t.activeTurn = nil
-		turn := activeTurn.TurnV1
-		t.mu.Unlock()
-
-		activeTurn.Cancel()
-		return &turn
-	}
-
-	if len(t.turns) == 0 {
-		t.mu.Unlock()
-		return nil
-	}
-	lastElementIdx := len(t.turns) - 1
-	turn := t.turns[lastElementIdx]
-	t.turns = t.turns[:lastElementIdx]
-	t.mu.Unlock()
-
-	return &turn
-}
-
-func (t *Conversation) popOld() *llms.Turn {
-	t.mu.RLock()
-	activeTurn := t.activeTurn
-	t.mu.RUnlock()
-
-	if activeTurn != nil {
-		activeTurn.Cancel()
-		turns := llms.ToTurnsV0FromV1([]llms.TurnV1{activeTurn.TurnV1})
-		if len(turns) > 1 {
-			t.mu.Lock()
-			if t.activeTurn == activeTurn {
-				t.activeTurn.Responses = nil
-				t.activeTurn.ToolCalls = nil
-				t.activeTurn.Interruptions = nil
-				t.activeTurn.IsFinalised = false
-			}
-			t.mu.Unlock()
-			return &turns[1]
-		}
-		t.mu.Lock()
-		if t.activeTurn == activeTurn {
-			t.activeTurn = nil
-		}
-		t.mu.Unlock()
-		return &turns[0]
-	}
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if len(t.turns) == 0 {
-		return nil
-	}
-	lastElementIdx := len(t.turns) - 1
-	turn := t.turns[lastElementIdx]
-	turns := llms.ToTurnsV0FromV1([]llms.TurnV1{turn})
-	if len(turns) > 1 {
-		t.turns[lastElementIdx].Responses = nil
-		t.turns[lastElementIdx].ToolCalls = nil
-		t.turns[lastElementIdx].Interruptions = nil
-		t.turns[lastElementIdx].IsFinalised = false
-		return &turns[1]
-	}
-	t.turns = t.turns[:lastElementIdx]
-	return &turns[0]
-}
-
-// Clear removes all stored turns
-func (t *Conversation) Clear() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.turns = nil
-	t.activeTurn = nil
-}
-
-// Values is an iterator that goes over all the stored turns starting from the
-// earliest towards the latest
-func (t *Conversation) Values(yield func(llms.TurnV1) bool) {
-	for _, turn := range t.historySnapshot() {
-		if !yield(turn) {
-			return
-		}
-	}
-	if activeTurn := t.activeTurnSnapshot(); activeTurn != nil {
-		if !yield(*activeTurn) {
-			return
-		}
-	}
-}
-
-// Values is an iterator that goes over all the stored turns starting from the
-// latest towards the earliest
-func (t *Conversation) RValues(yield func(llms.TurnV1) bool) {
-	if activeTurn := t.activeTurnSnapshot(); activeTurn != nil {
-		if !yield(*activeTurn) {
-			return
-		}
-	}
-	// TODO: There should be a better way to do this than creating a new
-	// method just for reversing the order
-	for _, turn := range slices.Backward(t.historySnapshot()) {
-		if !yield(turn) {
-			return
-		}
-	}
-}
-
-func (t *Conversation) updateInterruption(id int64, update func(*llms.InterruptionV0)) {
+func (t *activeConversation) updateInterruption(id int64, update func(*llms.InterruptionV0)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -282,4 +193,93 @@ func (t *Conversation) updateInterruption(id int64, update func(*llms.Interrupti
 			}
 		}
 	}
+}
+
+func (t *activeConversation) Start() (started bool) {
+	runtime := t.runtimeSnapshot()
+	if runtime == nil || runtime.isClosed() {
+		return false
+	}
+
+	runtime.startOnce.Do(func() {
+		if runtime.isClosed() {
+			return
+		}
+
+		started = true
+		runtime.started.Store(true)
+		go func() {
+			defer close(runtime.done)
+
+			for {
+				select {
+				case <-runtime.closeCh:
+					return
+				case queuedEvent := <-runtime.queue:
+					if runtime.isClosed() {
+						return
+					}
+					runtime.processQueuedEvent(t, queuedEvent)
+				}
+			}
+		}()
+	})
+
+	return started
+}
+
+func (t *activeConversation) End() {
+	runtime := t.runtimeSnapshot()
+	if runtime == nil {
+		return
+	}
+
+	runtime.endOnce.Do(func() {
+		close(runtime.closeCh)
+		t.CancelActiveTurn()
+	})
+}
+
+func (t *activeConversation) AwaitCompletion() {
+	runtime := t.runtimeSnapshot()
+	if runtime == nil {
+		return
+	}
+
+	if runtime.started.Load() {
+		<-runtime.done
+	}
+}
+
+func (t *activeConversation) Enqueue(event llms.EventV0) bool {
+	runtime := t.runtimeSnapshot()
+	if runtime == nil {
+		// TODO: Decide what to do with events queued before runtime starts.
+		return false
+	}
+
+	if runtime.isClosed() {
+		return false
+	}
+
+	queueItem := eventQueueItem{event: event, queuedAt: time.Now()}
+	select {
+	case <-runtime.closeCh:
+		return false
+	case runtime.queue <- queueItem:
+		return true
+	}
+}
+
+func (t *activeConversation) activeTurnRef() *activeTurn {
+	t.mu.RLock()
+	activeTurn := t.activeTurn
+	t.mu.RUnlock()
+	return activeTurn
+}
+
+func (t *activeConversation) runtimeSnapshot() *conversationRuntime {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.runtime
 }

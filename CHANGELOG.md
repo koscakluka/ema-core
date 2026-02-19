@@ -12,8 +12,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `core/EventHandlerV0` and `core/WithEventHandlerV0` for plugging custom event
   handlers into `core/Orchestrator`
-- `core/conversations.ActiveContextV0` to expose conversation history, active
-  turn, and available tools to event handlers
+- `core/conversations.ActiveContextV0` to expose live conversation history,
+  active turn, and available tools to event handlers
+- `core/ConversationV1` as a point-in-time conversation view returned by
+  `core/Orchestrator.ConversationV1`
 - `core/events/interruptions` event handlers (`NewEventHandlerWithStructuredPrompt`
   and `NewEventHandlerWithGeneralPrompt`) that combine basic event processing
   and interruption classification

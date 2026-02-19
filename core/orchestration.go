@@ -7,7 +7,6 @@ import (
 
 	"log"
 
-	emaContext "github.com/koscakluka/ema-core/core/context"
 	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/internal/utils"
@@ -19,7 +18,7 @@ type Orchestrator struct {
 	IsRecording bool
 	IsSpeaking  bool
 
-	conversation Conversation
+	conversation activeConversation
 
 	closeOnce sync.Once
 	runtime   *conversationRuntime
@@ -35,9 +34,13 @@ type Orchestrator struct {
 }
 
 func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
+	isSpeaking := false
+	runtime := newConversationRuntime()
+	runtime.setSpeaking(isSpeaking)
+
 	o := &Orchestrator{
 		IsRecording: false,
-		IsSpeaking:  false,
+		IsSpeaking:  isSpeaking,
 		baseContext: context.Background(),
 		defaultEventHandler: internalEventHandler{
 			interruptionHandlerV0: nil,
@@ -45,7 +48,10 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 			interruptionHandlerV2: nil,
 			orchestrator:          nil,
 		},
+		runtime:      runtime,
+		conversation: newConversation(runtime),
 	}
+
 	o.audioInput = *newAudioInput(nil, func(audio []byte) {
 		if o.orchestrateOptions.onInputAudio != nil {
 			o.orchestrateOptions.onInputAudio(audio)
@@ -55,9 +61,6 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 	})
 	o.defaultEventHandler.orchestrator = o
 	o.eventHandler = &o.defaultEventHandler
-	o.runtime = newConversationRuntime()
-	o.conversation.setRuntime(o.runtime)
-	o.runtime.setSpeaking(o.IsSpeaking)
 
 	for _, opt := range opts {
 		opt(o)
@@ -68,7 +71,7 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 
 func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
-		o.conversation.end()
+		o.conversation.End()
 
 		if err := o.audioInput.Close(); err != nil {
 			recordedErr := fmt.Errorf("failed to close audio input: %w", err)
@@ -84,7 +87,7 @@ func (o *Orchestrator) Close() {
 			span.SetStatus(codes.Error, recordedErr.Error())
 		}
 
-		o.conversation.waitUntilEnded()
+		o.conversation.AwaitCompletion()
 	})
 }
 
@@ -117,7 +120,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 		onCancellation: o.orchestrateOptions.onCancellation,
 	})
 
-	if started := o.conversation.start(); started {
+	if started := o.conversation.Start(); started {
 		go func() {
 			<-ctx.Done()
 			o.Close()
@@ -141,7 +144,11 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 	}
 	o.audioInput.Start(o.baseContext)
 }
-func (o *Orchestrator) ConversationV0() emaContext.ConversationV0 { return &o.conversation }
+
+// ConversationV1 returns a point-in-time snapshot of conversation state.
+func (o *Orchestrator) ConversationV1() ConversationV1 {
+	return o.conversation.Snapshot()
+}
 
 func (o *Orchestrator) IsAlwaysRecording() bool { return o.audioInput.IsAlwaysRecording() }
 func (o *Orchestrator) SetAlwaysRecording(isAlwaysRecording bool) {
@@ -200,9 +207,9 @@ func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
 	_, err := o.runtime.llm.generate(
 		ctx,
 		events.NewUserPromptEvent(prompt),
-		o.conversation.historySnapshot(),
+		o.conversation.History(),
 		newTextBuffer(),
-		func() bool { return o.conversation.activeTurnCancelled() },
+		func() bool { return o.conversation.IsActiveTurnCancelled() },
 	)
 	return err
 }
