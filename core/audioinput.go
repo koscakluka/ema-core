@@ -29,6 +29,10 @@ type audioInput struct {
 	onInputAudio func(audio []byte)
 }
 
+// newAudioInput creates an audioInput wrapper around the provided client.
+//
+// If no callback is provided, a no-op callback is used so callers do not need
+// to guard against nil. Capture defaults to always-on mode.
 func newAudioInput(client audioInputBase, onInputAudio func(audio []byte)) *audioInput {
 	if onInputAudio == nil {
 		onInputAudio = func(audio []byte) {}
@@ -40,6 +44,10 @@ func newAudioInput(client audioInputBase, onInputAudio func(audio []byte)) *audi
 	return &audioInput
 }
 
+// Set replaces the active input client and re-detects optional capabilities.
+//
+// Any previous capture state is cleared because the previous client may no
+// longer be valid.
 func (a *audioInput) Set(client audioInputBase) {
 	if a == nil {
 		return
@@ -66,6 +74,7 @@ func (a *audioInput) IsAlwaysRecording() bool       { return a == nil || a.alway
 func (a *audioInput) IsCapturing() bool             { return a != nil && a.isCapturing.Load() }
 func (a *audioInput) ShouldCapture() bool           { return a != nil && a.shouldCapture.Load() }
 
+// EnableAlwaysCapture keeps input capture running regardless of turn state.
 func (a *audioInput) EnableAlwaysCapture(ctx context.Context) error {
 	if a == nil {
 		return nil
@@ -75,6 +84,7 @@ func (a *audioInput) EnableAlwaysCapture(ctx context.Context) error {
 	return a.Capture(ctx)
 }
 
+// DisableAlwaysCapture disables continuous capture and attempts to stop input.
 func (a *audioInput) DisableAlwaysCapture(context.Context) error {
 	if a == nil {
 		return nil
@@ -84,6 +94,7 @@ func (a *audioInput) DisableAlwaysCapture(context.Context) error {
 	return a.StopCapture()
 }
 
+// RequestCapture marks capture as needed for the current phase and starts it.
 func (a *audioInput) RequestCapture(ctx context.Context) error {
 	if a == nil {
 		return nil
@@ -93,6 +104,7 @@ func (a *audioInput) RequestCapture(ctx context.Context) error {
 	return a.Capture(ctx)
 }
 
+// ReleaseCapture clears transient capture intent and may stop capture.
 func (a *audioInput) ReleaseCapture(context.Context) error {
 	if a == nil {
 		return nil
@@ -102,12 +114,18 @@ func (a *audioInput) ReleaseCapture(context.Context) error {
 	return a.StopCapture()
 }
 
+// Start initializes capture when a client is configured.
 func (a *audioInput) Start(ctx context.Context) {
 	if a.IsConfigured() {
 		a.Capture(ctx)
 	}
 }
 
+// Capture starts audio input exactly once per active capture session.
+//
+// For clients with fine-grained capture controls, capture starts only when the
+// policy requires it (always-on or explicitly requested). For basic streaming
+// clients, streaming starts whenever a client is configured.
 func (a *audioInput) Capture(ctx context.Context) error {
 	if a == nil {
 		return nil
@@ -148,6 +166,10 @@ func (a *audioInput) Capture(ctx context.Context) error {
 	return nil
 }
 
+// Close stops capture when supported and closes the configured client.
+//
+// Stop errors are accumulated and returned so cleanup can proceed even if one
+// step fails.
 func (a *audioInput) Close() error {
 	var errs error
 	if a.base != nil && a.IsConfigured() {
@@ -164,6 +186,10 @@ func (a *audioInput) Close() error {
 	return errs
 }
 
+// StopCapture stops capture only when no active policy requires it.
+//
+// For clients without explicit capture controls, capture lifecycle is managed
+// externally by the stream context and there is nothing to stop here.
 func (a *audioInput) StopCapture() error {
 	if a.SupportsCaptureControls() {
 		if a.IsAlwaysRecording() || a.ShouldCapture() {
@@ -180,6 +206,7 @@ func (a *audioInput) StopCapture() error {
 	return nil
 }
 
+// EncodingInfo returns input encoding metadata or the package defaults.
 func (a *audioInput) EncodingInfo() audio.EncodingInfo {
 	if a == nil || a.base == nil {
 		return audio.GetDefaultEncodingInfo()
@@ -188,6 +215,7 @@ func (a *audioInput) EncodingInfo() audio.EncodingInfo {
 	return a.base.EncodingInfo()
 }
 
+// onAudio forwards captured audio only when current capture policy allows it.
 func (a *audioInput) onAudio(audio []byte) {
 	if !a.IsAlwaysRecording() && !a.ShouldCapture() {
 		return
