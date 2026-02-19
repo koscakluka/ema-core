@@ -21,6 +21,18 @@ func TestWithAudioInputConfiguresAudioInputFacade(t *testing.T) {
 	}
 }
 
+func TestWithAudioInputIgnoresTypedNilClient(t *testing.T) {
+	var inputClient *testPointerAudioInputClient
+	o := NewOrchestrator(WithAudioInput(inputClient))
+
+	if o.audioInput.IsConfigured() {
+		t.Fatalf("expected typed nil input client to be treated as unconfigured")
+	}
+	if o.audioInput.base != nil {
+		t.Fatalf("expected facade base client to be nil for typed nil input")
+	}
+}
+
 func TestAudioInputFacadeUsesDefaultEncodingInfoWhenUnset(t *testing.T) {
 	facade := newTestAudioInput(nil)
 
@@ -38,6 +50,23 @@ func TestAudioInputFacadeAlwaysRecordingDefaultsTrue(t *testing.T) {
 
 	if !facade.IsAlwaysRecording() {
 		t.Fatalf("expected always recording to default to true")
+	}
+}
+
+func TestAudioInputFacadeSetTypedNilClearsConfiguration(t *testing.T) {
+	facade := newTestAudioInput(&testAudioInputClient{})
+	if !facade.IsConfigured() {
+		t.Fatalf("expected facade to start configured")
+	}
+
+	var inputClient *testPointerAudioInputClient
+	facade.Set(inputClient)
+
+	if facade.IsConfigured() {
+		t.Fatalf("expected facade to be unconfigured after setting typed nil client")
+	}
+	if facade.base != nil {
+		t.Fatalf("expected facade base client to be nil after setting typed nil client")
 	}
 }
 
@@ -84,6 +113,8 @@ func TestAudioInputFacadeCaptureForwardsInputAudio(t *testing.T) {
 
 type testAudioInputClient struct{}
 
+type testPointerAudioInputClient struct{}
+
 func newTestAudioInput(client audioInputBase) *audioInput {
 	return newAudioInput(client, nil)
 }
@@ -97,6 +128,16 @@ func (testAudioInputClient) Stream(context.Context, func([]byte)) error {
 }
 
 func (testAudioInputClient) Close() {}
+
+func (*testPointerAudioInputClient) EncodingInfo() audio.EncodingInfo {
+	return audio.GetDefaultEncodingInfo()
+}
+
+func (*testPointerAudioInputClient) Stream(context.Context, func([]byte)) error {
+	return nil
+}
+
+func (*testPointerAudioInputClient) Close() {}
 
 type testFineAudioInputClient struct {
 	testAudioInputClient

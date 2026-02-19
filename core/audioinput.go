@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"reflect"
 	"sync/atomic"
 
 	"github.com/koscakluka/ema-core/core/audio"
@@ -53,15 +54,16 @@ func (a *audioInput) Set(client audioInputBase) {
 		return
 	}
 
-	a.base = client
+	a.base = nil
 	a.fineCaptureControle = nil
 	a.connected.Store(false)
 	a.isCapturing.Store(false)
 
-	if client == nil {
+	if isNilAudioInputBase(client) {
 		return
 	}
 
+	a.base = client
 	a.connected.Store(true)
 	if fine, ok := client.(AudioInputFine); ok {
 		a.fineCaptureControle = fine
@@ -222,4 +224,18 @@ func (a *audioInput) onAudio(audio []byte) {
 	}
 
 	a.onInputAudio(audio)
+}
+
+func isNilAudioInputBase(client audioInputBase) bool {
+	if client == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(client)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
