@@ -2,6 +2,7 @@ package conversations
 
 import "github.com/koscakluka/ema-core/core/llms"
 
+// ActiveContextV0 exposes live conversation context for event handlers.
 type ActiveContextV0 interface {
 	// Past turns only. Ordering: oldest -> newest.
 	History() []llms.TurnV1
