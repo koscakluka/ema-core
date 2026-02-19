@@ -43,6 +43,50 @@ func TestAudioOutputSnapshotKeepsOriginalClientAfterSet(t *testing.T) {
 	}
 }
 
+func TestAudioOutputFacadeTreatsTypedNilAsUnconfigured(t *testing.T) {
+	var outputClient *snapshotAudioOutputV0
+
+	facade := newAudioOutput(outputClient)
+
+	if facade.isConfigured() {
+		t.Fatalf("expected typed nil output client to be treated as unconfigured")
+	}
+	if facade.base != nil {
+		t.Fatalf("expected base client to be nil for typed nil output client")
+	}
+	if facade.v0 != nil || facade.v1 != nil {
+		t.Fatalf("expected version-specific clients to be nil for typed nil output client")
+	}
+
+	callbackCalled := false
+	facade.Mark("typed-nil-mark", func(string) {
+		callbackCalled = true
+	})
+	if !callbackCalled {
+		t.Fatalf("expected unconfigured facade to invoke mark callback")
+	}
+}
+
+func TestAudioOutputFacadeSetTypedNilClearsConfiguration(t *testing.T) {
+	facade := newAudioOutput(&snapshotAudioOutputV0{})
+	if !facade.isConfigured() {
+		t.Fatalf("expected facade to start configured")
+	}
+
+	var outputClient *snapshotAudioOutputV0
+	facade.Set(outputClient)
+
+	if facade.isConfigured() {
+		t.Fatalf("expected facade to become unconfigured after setting typed nil output client")
+	}
+	if facade.base != nil {
+		t.Fatalf("expected base client to be nil after setting typed nil output client")
+	}
+	if facade.v0 != nil || facade.v1 != nil {
+		t.Fatalf("expected version-specific clients to be nil after setting typed nil output client")
+	}
+}
+
 func TestAudioOutputSnapshotPreservesMarkBehaviorAcrossSet(t *testing.T) {
 	original := &snapshotAudioOutputV1{}
 	replacement := &snapshotAudioOutputV0{}

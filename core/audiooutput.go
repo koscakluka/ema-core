@@ -1,6 +1,10 @@
 package orchestration
 
-import "github.com/koscakluka/ema-core/core/audio"
+import (
+	"reflect"
+
+	"github.com/koscakluka/ema-core/core/audio"
+)
 
 type audioOutput struct {
 	// base stores the configured output client regardless of protocol version.
@@ -10,12 +14,8 @@ type audioOutput struct {
 	// v1 is set when the output client supports callback-based mark handling.
 	v1 AudioOutputV1
 
-	// connected reports whether a usable output client is configured.
-	connected bool
 	// supportsCallbackMarks reports whether marks can invoke callbacks directly.
 	supportsCallbackMarks bool
-	// isV1 tracks whether the configured client uses the v1 output contract.
-	isV1 bool
 }
 
 func newAudioOutput(client audioOutputBase) *audioOutput {
@@ -29,29 +29,33 @@ func (a *audioOutput) Set(client audioOutputBase) {
 		return
 	}
 
-	a.base = client
+	a.base = nil
 	a.v0 = nil
 	a.v1 = nil
-	a.connected = false
 	a.supportsCallbackMarks = false
-	a.isV1 = false
 
-	if client == nil {
+	if isNilAudioOutputBase(client) {
 		return
 	}
+	a.base = client
 
 	if v1, ok := client.(AudioOutputV1); ok {
 		a.v1 = v1
-		a.isV1 = true
 		a.supportsCallbackMarks = true
-		a.connected = true
 		return
 	}
 
 	if v0, ok := client.(AudioOutputV0); ok {
 		a.v0 = v0
-		a.connected = true
 	}
+}
+
+func (a *audioOutput) isConfigured() bool {
+	if a == nil {
+		return false
+	}
+
+	return a.v0 != nil || a.v1 != nil
 }
 
 func (a *audioOutput) Snapshot() audioOutput {
@@ -100,4 +104,18 @@ func (a *audioOutput) EncodingInfo() audio.EncodingInfo {
 	}
 
 	return audio.GetDefaultEncodingInfo()
+}
+
+func isNilAudioOutputBase(client audioOutputBase) bool {
+	if client == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(client)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }

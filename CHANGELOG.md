@@ -73,6 +73,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `SetSpeaking(true)` no longer stops the active turn's speech pipeline
 - LLM-dependent orchestration paths now return explicit `ErrLLMNotConfigured`
   errors when no LLM client is configured
+- audio output facade setup now treats typed-nil clients as unconfigured,
+  preventing invalid configured state and nil method dispatch
 
 ## [v0.0.16] - 2026-02-16
 
