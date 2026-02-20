@@ -14,41 +14,10 @@ import (
 )
 
 func (o *Orchestrator) respondToEvent(event llms.EventV0) {
-	ctx := o.baseContext
-	if activeTurnCtx := o.conversation.ActiveTurnContext(); activeTurnCtx != nil {
-		ctx = activeTurnCtx
-	}
-
-	switch t := event.(type) {
-	case events.SpeechStartedEvent:
-		if o.orchestrateOptions.onSpeakingStateChanged != nil {
-			o.orchestrateOptions.onSpeakingStateChanged(true)
-		}
-	case events.SpeechEndedEvent:
-		if o.orchestrateOptions.onSpeakingStateChanged != nil {
-			o.orchestrateOptions.onSpeakingStateChanged(false)
-		}
-	case events.InterimTranscriptionEvent:
-		if o.orchestrateOptions.onInterimTranscription != nil {
-			o.orchestrateOptions.onInterimTranscription(t.Transcript())
-		}
-	case events.TranscriptionEvent:
-		if o.orchestrateOptions.onInterimTranscription != nil {
-			o.orchestrateOptions.onInterimTranscription("")
-		}
-		if o.orchestrateOptions.onTranscription != nil {
-			o.orchestrateOptions.onTranscription(t.Transcript())
-		}
-	}
-
+	ctx := o.currentActiveContext()
 	for event, err := range o.eventHandler.HandleV0(ctx, event, &o.conversation) {
 		if err != nil {
-			var span trace.Span
-			if activeTurnCtx := o.conversation.ActiveTurnContext(); activeTurnCtx != nil {
-				span = trace.SpanFromContext(activeTurnCtx)
-			} else {
-				span = trace.SpanFromContext(o.baseContext)
-			}
+			span := trace.SpanFromContext(o.currentActiveContext())
 			span.RecordError(err)
 			return
 		}
@@ -65,11 +34,11 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 		// retries, metrics, or other cross-cutting behavior around event handling.
 		switch t := event.(type) {
 		case events.CancelTurnEvent:
-			o.conversation.CancelActiveTurn()
+			o.currentResponsePipeline().Cancel()
 		case events.PauseTurnEvent:
-			o.conversation.pauseActiveTurn()
+			o.currentResponsePipeline().Pause()
 		case events.UnpauseTurnEvent:
-			o.conversation.unpauseActiveTurn()
+			o.currentResponsePipeline().Unpause()
 		case events.RecordInterruptionEvent:
 			o.conversation.addInterruptionToActiveTurn(t.Interruption)
 		case events.ResolveInterruptionEvent:
@@ -90,7 +59,7 @@ func (o *Orchestrator) respondToEvent(event llms.EventV0) {
 			}
 			return
 		default:
-			if ok := o.conversation.Enqueue(event); !ok {
+			if ok := o.eventPlayer.Ingest(event); !ok {
 				log.Printf("Warning: failed to enqueue event %T", event)
 			}
 		}

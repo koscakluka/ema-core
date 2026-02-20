@@ -25,7 +25,7 @@ type LLMWithGeneralPrompt interface {
 
 func WithStreamingLLM(client LLMWithStream) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.runtime.llm.set(client)
+		o.llm.set(client)
 	}
 }
 
@@ -48,9 +48,10 @@ type TextToSpeech interface {
 
 func WithTextToSpeechClient(client TextToSpeech) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.runtime.textToSpeech.set(client)
+		o.textToSpeech.set(client)
 		o.IsSpeaking = true
-		o.runtime.setSpeaking(true)
+		// TODO: This doesn't really make sense here
+		o.textToSpeech.Unmute()
 	}
 }
 
@@ -60,9 +61,10 @@ type TextToSpeechV1 interface {
 
 func WithTextToSpeechClientV1(client TextToSpeechV1) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.runtime.textToSpeech.set(client)
+		o.textToSpeech.set(client)
 		o.IsSpeaking = true
-		o.runtime.setSpeaking(true)
+		// TODO: This doesn't really make sense here
+		o.textToSpeech.Unmute()
 	}
 }
 
@@ -76,9 +78,7 @@ type AudioInputFine interface {
 }
 
 func WithAudioInput(client AudioInput) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.audioInput.Set(client)
-	}
+	return func(o *Orchestrator) { o.audioInput.Set(client) }
 }
 
 type AudioOutputV0 interface {
@@ -87,9 +87,7 @@ type AudioOutputV0 interface {
 }
 
 func WithAudioOutputV0(client AudioOutputV0) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.runtime.audioOutput.Set(client)
-	}
+	return func(o *Orchestrator) { o.audioOutput.Set(client) }
 }
 
 type AudioOutputV1 interface {
@@ -98,21 +96,15 @@ type AudioOutputV1 interface {
 }
 
 func WithAudioOutputV1(client AudioOutputV1) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.runtime.audioOutput.Set(client)
-	}
+	return func(o *Orchestrator) { o.audioOutput.Set(client) }
 }
 
 func WithTools(tools ...llms.Tool) OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.runtime.llm.setTools(tools...)
-	}
+	return func(o *Orchestrator) { o.llm.setTools(tools...) }
 }
 
 func WithOrchestrationTools() OrchestratorOption {
-	return func(o *Orchestrator) {
-		o.runtime.llm.appendTools(orchestrationTools(o)...)
-	}
+	return func(o *Orchestrator) { o.llm.appendTools(orchestrationTools(o)...) }
 }
 
 type EventHandlerV0 interface {
@@ -143,18 +135,33 @@ type OrchestrateOptions struct {
 
 type OrchestrateOption func(*OrchestrateOptions)
 
+// WithTranscriptionCallback registers a callback for final transcriptions
+// produced by the configured speech-to-text client.
+//
+// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// callback.
 func WithTranscriptionCallback(callback func(transcript string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
 		o.onTranscription = callback
 	}
 }
 
+// WithInterimTranscriptionCallback registers a callback for interim
+// transcriptions produced by the configured speech-to-text client.
+//
+// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// callback.
 func WithInterimTranscriptionCallback(callback func(transcript string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
 		o.onInterimTranscription = callback
 	}
 }
 
+// WithSpeakingStateChangedCallback registers a callback for speaking-state
+// updates produced by the configured speech-to-text client.
+//
+// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// callback.
 func WithSpeakingStateChangedCallback(callback func(isSpeaking bool)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
 		o.onSpeakingStateChanged = callback

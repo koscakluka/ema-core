@@ -81,12 +81,12 @@ func (a *audioOutput) isConfigured() bool {
 // Snapshot returns a per-turn copy of the facade state. The copy intentionally
 // keeps the same underlying client instance while freezing protocol routing for
 // the lifetime of the turn.
-func (a *audioOutput) Snapshot() audioOutput {
+func (a *audioOutput) Snapshot() *audioOutput {
 	if a == nil {
-		return audioOutput{}
+		return a
 	}
 
-	return *newAudioOutput(a.base)
+	return newAudioOutput(a.base)
 }
 
 // SendAudio forwards a chunk to the configured output client.

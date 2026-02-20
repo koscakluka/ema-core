@@ -35,7 +35,8 @@ func orchestrationTools(o *Orchestrator) []llms.Tool {
 }
 
 func (o *Orchestrator) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms.ToolCall, error) {
-	return o.runtime.llm.callTool(ctx, toolCall)
+	runtimeLLM := o.llm.snapshot()
+	return runtimeLLM.callTool(ctx, toolCall)
 }
 
 func (runtime *llm) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms.ToolCall, error) {

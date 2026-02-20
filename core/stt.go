@@ -9,8 +9,7 @@ import (
 )
 
 type speechToTextCallbacks struct {
-	onSpeechStarted        func()
-	onSpeechEnded          func()
+	onSpeechStateChanged   func(bool)
 	onInterimTranscription func(string)
 	onTranscription        func(string)
 }
@@ -18,6 +17,21 @@ type speechToTextCallbacks struct {
 type speechToText struct {
 	// client stores the configured speech-to-text implementation.
 	client SpeechToText
+
+	onSpeechStarted        func()
+	onSpeechEnded          func()
+	onInterimTranscription func(string)
+	onTranscription        func(string)
+}
+
+func newSpeechToText(client SpeechToText) *speechToText {
+	return &speechToText{
+		client:                 client,
+		onSpeechStarted:        func() {},
+		onSpeechEnded:          func() {},
+		onInterimTranscription: func(string) {},
+		onTranscription:        func(string) {},
+	}
 }
 
 func (s *speechToText) set(client SpeechToText) {
@@ -31,26 +45,42 @@ func (s *speechToText) isConfigured() bool {
 	return s != nil && s.client != nil
 }
 
-func (s *speechToText) start(ctx context.Context, callbacks speechToTextCallbacks, encodingInfo *audio.EncodingInfo) error {
+func (s *speechToText) SetCallbacks(callbacks speechToTextCallbacks) {
+	if s == nil {
+		return
+	}
+
+	if callbacks.onSpeechStateChanged != nil {
+		s.onSpeechStarted = func() {
+			callbacks.onSpeechStateChanged(true)
+		}
+		s.onSpeechEnded = func() {
+			callbacks.onSpeechStateChanged(false)
+		}
+	}
+	if callbacks.onInterimTranscription != nil {
+		s.onInterimTranscription = callbacks.onInterimTranscription
+	}
+	if callbacks.onTranscription != nil {
+		s.onTranscription = callbacks.onTranscription
+	}
+}
+
+func (s *speechToText) start(ctx context.Context, encodingInfo *audio.EncodingInfo) error {
 	if !s.isConfigured() {
 		return nil
 	}
 
-	sttOptions := []speechtotext.TranscriptionOption{}
-	if callbacks.onSpeechStarted != nil {
-		sttOptions = append(sttOptions, speechtotext.WithSpeechStartedCallback(callbacks.onSpeechStarted))
-	}
-	if callbacks.onSpeechEnded != nil {
-		sttOptions = append(sttOptions, speechtotext.WithSpeechEndedCallback(callbacks.onSpeechEnded))
-	}
-	if callbacks.onInterimTranscription != nil {
-		sttOptions = append(sttOptions, speechtotext.WithInterimTranscriptionCallback(callbacks.onInterimTranscription))
-	}
-	if callbacks.onTranscription != nil {
-		sttOptions = append(sttOptions, speechtotext.WithTranscriptionCallback(callbacks.onTranscription))
-	}
-	if encodingInfo != nil {
-		sttOptions = append(sttOptions, speechtotext.WithEncodingInfo(*encodingInfo))
+	// TODO: These need to be swipe-outable so they should probably be set instead of passed in start
+	sttOptions := []speechtotext.TranscriptionOption{
+		speechtotext.WithSpeechStartedCallback(s.onSpeechStarted),
+		speechtotext.WithSpeechEndedCallback(s.onSpeechEnded),
+		speechtotext.WithInterimTranscriptionCallback(s.onInterimTranscription),
+		speechtotext.WithTranscriptionCallback(func(transcript string) {
+			s.onInterimTranscription("")
+			s.onTranscription(transcript)
+		}),
+		speechtotext.WithEncodingInfo(*encodingInfo),
 	}
 
 	if err := s.Transcribe(ctx, sttOptions...); err != nil {

@@ -2,7 +2,6 @@ package orchestration
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -13,17 +12,23 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-var ErrLLMNotConfigured = errors.New("llm is not configured")
-
 type llm struct {
 	// client is the configured LLM implementation (streaming or prompt-based).
 	client LLM
 	// tools stores the effective tool list exposed to model calls.
 	tools []llms.Tool
+
+	// onResponse is called for each streamed response chunk.
+	onResponse func(string)
+	// onResponseEnd is called once response streaming is finished.
+	onResponseEnd func()
 }
 
 func newLLM() llm {
-	return llm{}
+	return llm{
+		onResponse:    func(string) {},
+		onResponseEnd: func() {},
+	}
 }
 
 func (runtime *llm) set(client LLM) {
@@ -50,6 +55,19 @@ func (runtime *llm) appendTools(tools ...llms.Tool) {
 	runtime.tools = append(runtime.tools, tools...)
 }
 
+func (runtime *llm) setResponseCallbacks(onResponse func(string), onResponseEnd func()) {
+	if runtime == nil {
+		return
+	}
+
+	if onResponse != nil {
+		runtime.onResponse = onResponse
+	}
+	if onResponseEnd != nil {
+		runtime.onResponseEnd = onResponseEnd
+	}
+}
+
 func (runtime *llm) availableTools() []llms.Tool {
 	if runtime == nil {
 		return nil
@@ -60,6 +78,21 @@ func (runtime *llm) availableTools() []llms.Tool {
 	return tools
 }
 
+func (runtime *llm) snapshot() llm {
+	if runtime == nil {
+		return llm{}
+	}
+
+	snapshot := llm{client: runtime.client}
+	if len(runtime.tools) > 0 {
+		snapshot.tools = make([]llms.Tool, len(runtime.tools))
+		copy(snapshot.tools, runtime.tools)
+	}
+	snapshot.setResponseCallbacks(runtime.onResponse, runtime.onResponseEnd)
+
+	return snapshot
+}
+
 func (runtime *llm) generate(
 	ctx context.Context,
 	event llms.EventV0,
@@ -67,8 +100,10 @@ func (runtime *llm) generate(
 	buffer *textBuffer,
 	activeTurnCancelled func() bool,
 ) (*llms.Response, error) {
+	defer runtime.onResponseEnd()
+
 	if runtime == nil || runtime.client == nil {
-		return nil, ErrLLMNotConfigured
+		return nil, nil
 	}
 
 	switch client := runtime.client.(type) {
@@ -92,7 +127,10 @@ func (runtime *llm) processPrompt(ctx context.Context,
 	response, err := client.Prompt(ctx, event.String(),
 		llms.WithTurnsV1(conversations...),
 		llms.WithTools(runtime.tools...),
-		llms.WithStream(buffer.AddChunk),
+		llms.WithStream(func(chunk string) {
+			buffer.AddChunk(chunk)
+			runtime.onResponse(chunk)
+		}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prompt llm: %w", err)
@@ -149,6 +187,7 @@ func (runtime *llm) processStreaming(ctx context.Context,
 
 				message.WriteString(chunk.Content())
 				buffer.AddChunk(chunk.Content())
+				runtime.onResponse(chunk.Content())
 
 			case llms.StreamToolCallChunk:
 				toolCalls = append(toolCalls, chunk.(llms.StreamToolCallChunk).ToolCall())

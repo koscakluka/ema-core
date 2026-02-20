@@ -34,10 +34,8 @@ type audioInput struct {
 //
 // If no callback is provided, a no-op callback is used so callers do not need
 // to guard against nil. Capture defaults to always-on mode.
-func newAudioInput(client audioInputBase, onInputAudio func(audio []byte)) *audioInput {
-	if onInputAudio == nil {
-		onInputAudio = func(audio []byte) {}
-	}
+func newAudioInput(client audioInputBase) *audioInput {
+	onInputAudio := func(audio []byte) {}
 
 	audioInput := audioInput{onInputAudio: onInputAudio}
 	audioInput.alwaysCapture.Store(true)
@@ -117,7 +115,17 @@ func (a *audioInput) ReleaseCapture(context.Context) error {
 }
 
 // Start initializes capture when a client is configured.
-func (a *audioInput) Start(ctx context.Context) {
+func (a *audioInput) Start(ctx context.Context, onInputAudio func(audio []byte)) {
+	if a.IsCapturing() {
+		return
+	}
+
+	// TODO: This is a swipe-outable option so it should be set instead of
+	// passed in start
+	if onInputAudio != nil {
+		a.onInputAudio = onInputAudio
+	}
+
 	if a.IsConfigured() {
 		a.Capture(ctx)
 	}

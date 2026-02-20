@@ -2,63 +2,83 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"log"
 
 	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/internal/utils"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
 type Orchestrator struct {
-	IsRecording bool
-	IsSpeaking  bool
-
+	baseContext  context.Context
 	conversation activeConversation
 
 	closeOnce sync.Once
-	runtime   *conversationRuntime
 
+	// audioInput is the input facade used to normalize capture behavior.
+	audioInput audioInput
 	// speechToText is the STT facade used to handle optional client wiring.
 	speechToText speechToText
-	// audioInput is the input facade used to normalize capture behavior.
-	audioInput          audioInput
-	eventHandler        EventHandlerV0
+	llm          llm
+	textToSpeech textToSpeech
+	audioOutput  audioOutput
+	speechPlayer speechPlayer
+
+	eventHandler EventHandlerV0
+	// defaultEventHandler is the internal event handler used to handle incoming
+	// events if no other handler is configured.
+	//
+	// TODO: Remove defaultEventHandler once we remove the interruption handlers
+	// probably on minor release
 	defaultEventHandler internalEventHandler
-	orchestrateOptions  OrchestrateOptions
-	baseContext         context.Context
+
+	eventPlayer      *eventPlayer
+	responsePipeline atomic.Pointer[responsePipeline]
+
+	// IsRecording indicates whether the orchestrator is currently recording
+	// audio input.
+	//
+	// Deprecated: (since v0.0.17) use [Orchestrator.IsCapturingAudio] instead
+	IsRecording bool
+	// IsSpeaking indicates whether the orchestrator is currently passing speech
+	// to audio output.
+	//
+	// Deprecated: (sinde v0.0.17) use [Orchestrator.IsMuted] instead
+	IsSpeaking bool
 }
 
 func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
+	isRecording := false
 	isSpeaking := false
-	runtime := newConversationRuntime()
-	runtime.setSpeaking(isSpeaking)
 
 	o := &Orchestrator{
-		IsRecording: false,
+		IsRecording: isRecording,
 		IsSpeaking:  isSpeaking,
+
 		baseContext: context.Background(),
-		defaultEventHandler: internalEventHandler{
-			interruptionHandlerV0: nil,
-			interruptionHandlerV1: nil,
-			interruptionHandlerV2: nil,
-			orchestrator:          nil,
-		},
-		runtime:      runtime,
-		conversation: newConversation(runtime),
+
+		audioInput:   *newAudioInput(nil),
+		speechToText: *newSpeechToText(nil),
+		llm:          newLLM(),
+		textToSpeech: *newTextToSpeech(nil /* isMuted */, !isSpeaking),
+		audioOutput:  *newAudioOutput(nil),
+		speechPlayer: *newSpeechPlayer(),
+
+		eventPlayer: newEventPlayer(),
 	}
+	// TODO: Move up once pipeline is removed from the constructor
+	o.conversation = newConversation(o.currentResponsePipeline, o.llm.availableTools)
 
-	o.audioInput = *newAudioInput(nil, func(audio []byte) {
-		if o.orchestrateOptions.onInputAudio != nil {
-			o.orchestrateOptions.onInputAudio(audio)
-		}
-
-		o.speechToText.SendAudio(audio)
-	})
+	// TODO: Remove defaultEventHandler once we remove the interruption handlers
+	// probably on minor release
 	o.defaultEventHandler.orchestrator = o
 	o.eventHandler = &o.defaultEventHandler
 
@@ -71,7 +91,8 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 
 func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
-		o.conversation.End()
+		o.eventPlayer.Stop()
+		o.currentResponsePipeline().Cancel()
 
 		if err := o.audioInput.Close(); err != nil {
 			recordedErr := fmt.Errorf("failed to close audio input: %w", err)
@@ -87,7 +108,7 @@ func (o *Orchestrator) Close() {
 			span.SetStatus(codes.Error, recordedErr.Error())
 		}
 
-		o.conversation.AwaitCompletion()
+		o.eventPlayer.AwaitDone()
 	})
 }
 
@@ -101,78 +122,123 @@ func (o *Orchestrator) Close() {
 // callbacks/options are being reconfigured.
 // TODO: Enforce this contract with a hard runtime guard (single-start gate).
 func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOption) {
-	if o.runtime.isClosed() {
+	// TODO: Rename this to StartConversation which will start a new conversation
+	// with everything setup
+	// It is also probably worth it to invest into a builder pattern instead of
+	// using the options, including the callbacks and then finish with calling
+	// the StartConversation method. It will be clearer to the caller and
+	// it will allow reusing the orchestrator. But we need to have the contract
+	// say that if there is a running conversation, it will be cancelled.
+	// and new one started from scratch.
+	// Additionally, we need to allow populating the conversation with
+	// tools and history.
+	// This method will probably need a EndConversation method to nicely clean
+	// up the conversation if the user choosed to do so.
+
+	if !o.eventPlayer.CanIngest() {
 		log.Println("Warning: orchestrator already closed, skipping Orchestrate")
 		return
 	}
 
-	o.orchestrateOptions = OrchestrateOptions{}
+	orchestrateOptions := OrchestrateOptions{}
 	for _, opt := range opts {
-		opt(&o.orchestrateOptions)
+		opt(&orchestrateOptions)
 	}
 
 	o.baseContext = ctx
-	o.runtime.configure(ctx, runtimeCallbacks{
-		onResponse:     o.orchestrateOptions.onResponse,
-		onResponseEnd:  o.orchestrateOptions.onResponseEnd,
-		onAudio:        o.orchestrateOptions.onAudio,
-		onAudioEnded:   o.orchestrateOptions.onAudioEnded,
-		onCancellation: o.orchestrateOptions.onCancellation,
+	o.llm.setResponseCallbacks(orchestrateOptions.onResponse, orchestrateOptions.onResponseEnd)
+	o.textToSpeech.SetCallbacks(orchestrateOptions.onAudio)
+	o.speechPlayer.SetCallbacks(orchestrateOptions.onAudioEnded)
+	o.eventPlayer.SetOnCancel(orchestrateOptions.onCancellation)
+	o.speechToText.SetCallbacks(speechToTextCallbacks{
+		onSpeechStateChanged: func(isSpeaking bool) {
+			if orchestrateOptions.onSpeakingStateChanged != nil {
+				orchestrateOptions.onSpeakingStateChanged(isSpeaking)
+			}
+
+			if isSpeaking {
+				go o.respondToEvent(events.NewSpeechStartedEvent())
+			} else {
+				go o.respondToEvent(events.NewSpeechEndedEvent())
+			}
+		},
+		onInterimTranscription: func(transcript string) {
+			if orchestrateOptions.onInterimTranscription != nil {
+				orchestrateOptions.onInterimTranscription(transcript)
+			}
+
+			go o.respondToEvent(events.NewInterimTranscriptionEvent(transcript))
+		},
+		onTranscription: func(transcript string) {
+			if orchestrateOptions.onTranscription != nil {
+				orchestrateOptions.onTranscription(transcript)
+			}
+
+			go o.respondToEvent(events.NewTranscriptionEvent(transcript))
+		},
 	})
 
-	if started := o.conversation.Start(); started {
+	if started := o.eventPlayer.StartLoop(o.baseContext, func(ctx context.Context, event llms.EventV0) error {
+		pipeline := newResponsePipeline(o.llm.snapshot(), o.textToSpeech.Snapshot(), o.speechPlayer.Snapshot(), o.audioOutput.Snapshot(),
+			o.eventPlayer.OnCancel,
+		)
+		if !o.responsePipeline.CompareAndSwap(nil, pipeline) {
+			return fmt.Errorf("active turn already in progress")
+		}
+		defer o.responsePipeline.CompareAndSwap(pipeline, nil)
+
+		activeTurn, err := o.conversation.startNewTurn(event)
+		if err != nil {
+			return err
+		}
+
+		activeTurn.TurnV1, err = pipeline.Run(ctx, activeTurn, o.conversation.History())
+		if err != nil {
+			// TODO: We should do something more reasonable here
+			if err2 := o.conversation.finaliseTurn(activeTurn.TurnV1); err2 != nil {
+				return errors.Join(err, fmt.Errorf("failed to finalise turn: %w", err2))
+			}
+			return fmt.Errorf("failed to run pipeline: %w", err)
+		}
+
+		interruptionTypes := []string{}
+		for _, interruption := range activeTurn.Interruptions {
+			interruptionTypes = append(interruptionTypes, interruption.Type)
+		}
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
+		span.SetAttributes(attribute.Int("assistant_turn.queued_events", o.eventPlayer.queuedEventCount()))
+
+		if err := o.conversation.finaliseTurn(activeTurn.TurnV1); err != nil {
+			return fmt.Errorf("failed to finalise turn: %w", err)
+		}
+		return nil
+	}); started {
 		go func() {
 			<-ctx.Done()
 			o.Close()
 		}()
 	}
 
-	if err := o.speechToText.start(
-		o.baseContext,
-		speechToTextCallbacks{
-			onSpeechStarted:        func() { go o.respondToEvent(events.NewSpeechStartedEvent()) },
-			onSpeechEnded:          func() { go o.respondToEvent(events.NewSpeechEndedEvent()) },
-			onInterimTranscription: func(transcript string) { go o.respondToEvent(events.NewInterimTranscriptionEvent(transcript)) },
-			onTranscription:        func(transcript string) { go o.respondToEvent(events.NewTranscriptionEvent(transcript)) },
-		},
-		utils.Ptr(o.audioInput.EncodingInfo()),
-	); err != nil {
+	if err := o.speechToText.start(o.baseContext, utils.Ptr(o.audioInput.EncodingInfo())); err != nil {
 		recordedErr := fmt.Errorf("failed to initialize speech-to-text: %w", err)
 		span := trace.SpanFromContext(o.baseContext)
 		span.RecordError(recordedErr)
 		span.SetStatus(codes.Error, recordedErr.Error())
 	}
-	o.audioInput.Start(o.baseContext)
+
+	o.audioInput.Start(o.baseContext, func(audio []byte) {
+		if orchestrateOptions.onInputAudio != nil {
+			orchestrateOptions.onInputAudio(audio)
+		}
+
+		o.speechToText.SendAudio(audio)
+	})
 }
 
 // ConversationV1 returns a point-in-time snapshot of conversation state.
 func (o *Orchestrator) ConversationV1() ConversationV1 {
 	return o.conversation.Snapshot()
-}
-
-func (o *Orchestrator) IsAlwaysRecording() bool { return o.audioInput.IsAlwaysRecording() }
-func (o *Orchestrator) SetAlwaysRecording(isAlwaysRecording bool) {
-	var err error
-	if isAlwaysRecording {
-		err = o.EnableAlwaysRecording(o.baseContext)
-	} else {
-		err = o.DisableAlwaysRecording(o.baseContext)
-	}
-
-	if err != nil {
-		recordedErr := fmt.Errorf("failed to set always recording to %t: %w", isAlwaysRecording, err)
-		span := trace.SpanFromContext(o.baseContext)
-		span.RecordError(recordedErr)
-		span.SetStatus(codes.Error, recordedErr.Error())
-	}
-}
-
-func (o *Orchestrator) EnableAlwaysRecording(ctx context.Context) error {
-	return o.audioInput.EnableAlwaysCapture(ctx)
-}
-
-func (o *Orchestrator) DisableAlwaysRecording(ctx context.Context) error {
-	return o.audioInput.DisableAlwaysCapture(ctx)
 }
 
 func (o *Orchestrator) Handle(event llms.EventV0) { o.respondToEvent(event) }
@@ -183,33 +249,62 @@ func (o *Orchestrator) UnpauseTurn()              { o.respondToEvent(events.NewU
 
 func (o *Orchestrator) SendAudio(audio []byte) error { return o.speechToText.SendAudio(audio) }
 
-func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
-	o.IsSpeaking = isSpeaking
-	o.runtime.setSpeaking(isSpeaking)
-	if !isSpeaking {
-		o.conversation.stopSpeakingActiveTurn()
-	}
+// IsMuted indicates whether the orchestrator is currently passing speech to
+// audio output. True means the orchestrator is currently not passing speech to
+// audio output.
+func (o *Orchestrator) IsMuted() bool { return o.textToSpeech.IsMuted() }
+
+// Mute stops passing speech to audio output.
+func (o *Orchestrator) Mute() {
+	o.IsSpeaking = false
+	o.textToSpeech.Mute()
+	o.currentResponsePipeline().StopSpeaking()
 }
 
-func (o *Orchestrator) StartRecording() error {
+// Unmute resumes passing speech to audio output.
+func (o *Orchestrator) Unmute() {
+	o.IsSpeaking = true
+	o.textToSpeech.Unmute()
+}
+
+// IsCapturingAudio indicates whether the orchestrator is currently capturing
+// audio input. It provides no reason why the orchestrator is capturing audio.
+func (o *Orchestrator) IsCapturingAudio() bool { return o.audioInput.IsCapturing() }
+
+// IsAlwaysCapturingAudio indicates whether the orchestrator is currently
+// always capturing audio input.
+func (o *Orchestrator) IsAlwaysCapturingAudio() bool { return o.audioInput.IsAlwaysRecording() }
+
+// EnableAlwaysCapturingAudio enables continuous capturing of audio input.
+func (o *Orchestrator) EnableAlwaysCapturingAudio() error {
+	return o.audioInput.EnableAlwaysCapture(o.baseContext)
+}
+
+// DisableAlwaysCapturingAudio disables continuous capturing of audio input.
+func (o *Orchestrator) DisableAlwaysCapturingAudio() error {
+	return o.audioInput.DisableAlwaysCapture(o.baseContext)
+}
+
+// IsRequestedToCaptureAudio indicates whether the orchestrator is currently
+// requested to capture audio input._
+func (o *Orchestrator) IsRequestedToCaptureAudio() bool { return o.audioInput.ShouldCapture() }
+
+// RequestToCaptureAudio requests to capture audio input.
+//
+// This will have no effect if the orchestrator is always or already capturing
+// audio.
+func (o *Orchestrator) RequestToCaptureAudio() error {
+	// TODO: Remove this assignment once on next minor release
 	o.IsRecording = true
 	return o.audioInput.RequestCapture(o.baseContext)
 }
 
-func (o *Orchestrator) StopRecording() error {
+// StopRequestingToCaptureAudio stops requesting to capture audio input.
+//
+// This will have no effect if the orchestrator is always capturing audio or
+// isn't capturing audio at the moment.
+func (o *Orchestrator) StopRequestingToCaptureAudio() error {
+	// TODO: Remove this assignment once on next minor release
 	o.IsRecording = false
 	return o.audioInput.ReleaseCapture(o.baseContext)
-}
-
-func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
-	ctx, span := tracer.Start(ctx, "call tool with prompt")
-	defer span.End()
-	_, err := o.runtime.llm.generate(
-		ctx,
-		events.NewUserPromptEvent(prompt),
-		o.conversation.History(),
-		newTextBuffer(),
-		func() bool { return o.conversation.IsActiveTurnCancelled() },
-	)
-	return err
 }
