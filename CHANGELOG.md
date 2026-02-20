@@ -28,11 +28,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `core/WithInterruptionHandlerV2` in favor of `core/WithEventHandlerV0`
 - `core/Config` and `core/WithConfig`; use `core/Orchestrator.SetAlwaysRecording`
   for recording behavior instead
+- legacy `TurnsV0`/`ConversationV0` mutation APIs and deprecated option aliases
+  are explicitly treated as compatibility-only shims
 
 ### Changed
 
 - interruption handling now runs through the event-handler pipeline, so custom
   handlers can influence turn cancellation, continuation prompts, and tool calls
+- speaking/transcription orchestrate callbacks are now emitted from speech-to-
+  text runtime callbacks; manually injected events via `Orchestrator.Handle` do
+  not invoke these callback hooks
 - orchestrator event queue lifecycle is now conversation-owned via internal
   conversation start/end runtime helpers, replacing assistant-loop-specific
   orchestrator loop state while preserving single-consumer turn sequencing
@@ -40,6 +45,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   instead of shared orchestrator config pointers
 - active turns now snapshot the configured audio-output facade at turn start, so
   runtime client reconfiguration does not alter in-flight turn output behavior
+- turn execution dependencies (LLM, TTS client, audio output, speaking state,
+  and runtime callbacks) are now snapshotted per turn from a single runtime
+  state owner, so config changes apply only to subsequent turns
 
 ### Fixed
 
@@ -73,10 +81,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - prompts queued before `Orchestrate` now remain buffered until runtime starts,
   and failed enqueue attempts are surfaced via warnings instead of silent drops
 - `SetSpeaking(true)` no longer stops the active turn's speech pipeline
-- LLM-dependent orchestration paths now return explicit `ErrLLMNotConfigured`
-  errors when no LLM client is configured
+- LLM-dependent orchestration paths now treat missing LLM clients as no-op
+  generation and still invoke response-end callbacks for turn completion hooks
 - audio output facade setup now treats typed-nil clients as unconfigured,
   preventing invalid configured state and nil method dispatch
+- active-turn speaking state now uses an atomic mute flag, reducing race risk
+  between control operations and speech processing
 
 ## [v0.0.16] - 2026-02-16
 
