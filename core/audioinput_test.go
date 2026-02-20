@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/koscakluka/ema-core/core/audio"
 )
@@ -85,38 +84,12 @@ func TestAudioInputFacadeCaptureControlsNoopForBasicInput(t *testing.T) {
 	}
 }
 
-func TestAudioInputFacadeCaptureForwardsInputAudio(t *testing.T) {
-	inputClient := &testStreamingAudioInputClient{}
-	var callbackCalls atomic.Int32
-	facade := newAudioInput(inputClient, func([]byte) {
-		callbackCalls.Add(1)
-	})
-
-	if err := facade.Capture(context.Background()); err != nil {
-		t.Fatalf("expected capture to start, got %v", err)
-	}
-
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if callbackCalls.Load() == 2 && inputClient.streamCalls.Load() == 1 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf(
-		"expected 2 callback invocations and 1 stream call, got callback calls=%d stream calls=%d",
-		callbackCalls.Load(),
-		inputClient.streamCalls.Load(),
-	)
-}
-
 type testAudioInputClient struct{}
 
 type testPointerAudioInputClient struct{}
 
 func newTestAudioInput(client audioInputBase) *audioInput {
-	return newAudioInput(client, nil)
+	return newAudioInput(client)
 }
 
 func (testAudioInputClient) EncodingInfo() audio.EncodingInfo {
