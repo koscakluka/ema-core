@@ -9,6 +9,8 @@ import (
 )
 
 type audioBuffer struct {
+	mu sync.Mutex
+
 	encodingInfo audio.EncodingInfo
 
 	audio                [][]byte
@@ -45,22 +47,31 @@ func newAudioBuffer(encodingInfo audio.EncodingInfo) *audioBuffer {
 }
 
 func (b *audioBuffer) AddAudio(audio []byte) {
+	b.mu.Lock()
 	b.audio = append(b.audio, audio)
+	b.mu.Unlock()
 	b.signalUpdate()
 }
 
 func (b *audioBuffer) Audio(yield func(audio audioOrMark) bool) {
 	firstStart := sync.Once{}
 	for {
-		for len(b.audio) > b.internalPlayhead {
+		for {
 			if ok := b.waitIfPaused(); !ok {
 				return
 			}
+
+			audio, ok := b.consumeNextChunk()
+			if !ok {
+				break
+			}
+
 			firstStart.Do(func() {
 				time.Sleep(50 * time.Millisecond)
 				b.StartedPlaying()
 			})
-			if !yield(audioOrMark{Type: "audio", Audio: b.consumeNextChunk()}) {
+
+			if !yield(audioOrMark{Type: "audio", Audio: audio}) {
 				return
 			}
 			if ok := b.broadcastMarks(yield); !ok {
@@ -74,23 +85,39 @@ func (b *audioBuffer) Audio(yield func(audio audioOrMark) bool) {
 }
 
 func (b *audioBuffer) waitIfPaused() (ok bool) {
-	for b.paused {
-		if b.stopped {
+	for {
+		b.mu.Lock()
+		paused := b.paused
+		stopped := b.stopped
+		b.mu.Unlock()
+
+		if stopped {
 			return false
 		}
+		if !paused {
+			return true
+		}
+
 		<-b.updateSignal
 	}
-
-	return !b.stopped
 }
 
-func (b *audioBuffer) consumeNextChunk() []byte {
+func (b *audioBuffer) consumeNextChunk() ([]byte, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if len(b.audio) <= b.internalPlayhead {
+		return nil, false
+	}
+
 	audio := b.audio[b.internalPlayhead]
 	b.internalPlayhead++
-	return audio
+	return audio, true
 }
 
 func (b *audioBuffer) broadcastMarks(yield func(audioOrMark) bool) (ok bool) {
+	b.mu.Lock()
+	marksToBroadcast := []string{}
 	for i, mark := range b.marks {
 		if mark.confirmed || mark.broadcasted {
 			continue
@@ -99,7 +126,12 @@ func (b *audioBuffer) broadcastMarks(yield func(audioOrMark) bool) (ok bool) {
 		}
 
 		b.marks[i].broadcasted = true
-		if !yield(audioOrMark{Type: "mark", Mark: mark.ID}) {
+		marksToBroadcast = append(marksToBroadcast, mark.ID)
+	}
+	b.mu.Unlock()
+
+	for _, markID := range marksToBroadcast {
+		if !yield(audioOrMark{Type: "mark", Mark: markID}) {
 			return false
 		}
 	}
@@ -108,10 +140,21 @@ func (b *audioBuffer) broadcastMarks(yield func(audioOrMark) bool) (ok bool) {
 }
 
 func (b *audioBuffer) waitForNextAudio(yield func(audioOrMark) bool) (ok bool) {
-	for len(b.audio) == b.internalPlayhead {
-		if b.stopped || b.audioDone() {
+	for {
+		b.mu.Lock()
+		noAudioAvailable := len(b.audio) == b.internalPlayhead
+		stopped := b.stopped
+		audioDone := b.audioDoneLocked()
+		b.mu.Unlock()
+
+		if !noAudioAvailable {
+			return !(stopped || audioDone)
+		}
+
+		if stopped || audioDone {
 			return false
 		}
+
 		<-b.updateSignal
 		// HACK: This is only here because sometimes the mark arrives after the
 		// audio has been fully played and it will make this an infinite
@@ -120,33 +163,50 @@ func (b *audioBuffer) waitForNextAudio(yield func(audioOrMark) bool) (ok bool) {
 			return false
 		}
 	}
-	return !(b.stopped || b.audioDone())
 }
 
 func (b *audioBuffer) audioDone() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.audioDoneLocked()
+}
+
+// audioDoneLocked is a version of [audioBuffer.audioDone] that is safe to call
+// from a locked context.
+func (b *audioBuffer) audioDoneLocked() bool {
+
 	return (b.allAudioLoaded || (b.usingWithLegacyTTS && b.legacyAllAudioLoaded)) &&
 		b.externalPlayhead == len(b.audio)
 }
 
 func (b *audioBuffer) Mark(transcript string) {
+	b.mu.Lock()
 	b.marks = append(b.marks, audioBufferMark{
 		ID:         uuid.NewString(),
 		transcript: transcript,
 		position:   len(b.audio),
 	})
+	b.mu.Unlock()
 	b.signalUpdate()
 }
 
 func (b *audioBuffer) GetMarkText(id string) *string {
-	for _, mark := range b.marks {
-		if mark.ID == id {
-			return &mark.transcript
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for i := range b.marks {
+		if b.marks[i].ID == id {
+			transcript := b.marks[i].transcript
+			return &transcript
 		}
 	}
 	return nil
 }
 
 func (b *audioBuffer) ConfirmMark(id string) {
+	b.mu.Lock()
+	shouldSignal := false
 	for i, mark := range b.marks {
 		if mark.confirmed {
 			continue
@@ -158,21 +218,34 @@ func (b *audioBuffer) ConfirmMark(id string) {
 			// "actual_duration", time.Since(b.audioPlayingStarted),
 			b.marks[i].confirmed = true
 			b.externalPlayhead = mark.position
-			b.StartedPlaying()
+			b.startedPlayingLocked()
 			if (b.allAudioLoaded ||
 				// HACK: Following condition is purely for using old tts interface
 				// TODO: Remove this once we can remove the old TTS version
 				(b.usingWithLegacyTTS && i == len(b.marks)-1 && b.marks[i].transcript == "")) &&
 				b.externalPlayhead == len(b.audio) {
 				b.legacyAllAudioLoaded = true
-				b.signalUpdate()
+				shouldSignal = true
 			}
 			break
 		}
 	}
+	b.mu.Unlock()
+
+	if shouldSignal {
+		b.signalUpdate()
+	}
 }
 
 func (b *audioBuffer) StartedPlaying() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.startedPlayingLocked()
+}
+
+// startedPlayingLocked is a version of [audioBuffer.StartedPlaying] that is safe to call from
+// a locked context.
+func (b *audioBuffer) startedPlayingLocked() {
 	b.lastMarkTimestamp = time.Now()
 	// TODO: It would also be good to trigger a timer in case marks fail and
 	// we have to terminate the loop when we think the audio was supposed to end
@@ -183,22 +256,28 @@ func (b *audioBuffer) StartedPlaying() {
 }
 
 func (b *audioBuffer) AllAudioLoaded() {
+	b.mu.Lock()
 	b.allAudioLoaded = true
+	b.mu.Unlock()
+	b.signalUpdate()
 	// TODO: Start timer to automatically terminate playing after audio is
 	// supposed to have ended
 }
 
 func (b *audioBuffer) Pause() {
-	if b.audioDone() || b.paused {
+	b.mu.Lock()
+	if b.audioDoneLocked() || b.paused {
+		b.mu.Unlock()
 		return
 	}
 
 	b.paused = true
-	b.rewind()
+	b.rewindLocked()
+	b.mu.Unlock()
 	b.signalUpdate()
 }
 
-func (b *audioBuffer) rewind() {
+func (b *audioBuffer) rewindLocked() {
 	// TODO: Account for the latency of the audio sink (i.e. time it takes from
 	// when audio leaves the buffer to when it is actually played + the time
 	// it takes for use to receive the information that the audio was played)
@@ -226,17 +305,26 @@ func (b *audioBuffer) rewind() {
 }
 
 func (b *audioBuffer) Resume() {
-	if b.audioDone() || !b.paused {
+	b.mu.Lock()
+	if b.audioDoneLocked() || !b.paused {
+		b.mu.Unlock()
 		return
 	}
 
 	b.paused = false
-	b.StartedPlaying()
+	b.startedPlayingLocked()
+	b.mu.Unlock()
 	b.signalUpdate()
 }
 
 func (b *audioBuffer) Stop() {
+	b.mu.Lock()
+	if b.stopped {
+		b.mu.Unlock()
+		return
+	}
 	b.stopped = true
+	b.mu.Unlock()
 	b.signalUpdate()
 }
 
