@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"slices"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/interruptions"
 	"github.com/koscakluka/ema-core/core/llms"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type InterruptionHandlerV0 interface {
@@ -67,7 +70,7 @@ type Config struct {
 // Deprecated: (since v0.0.13) use WithStreamingLLM instead
 func WithLLM(client LLMWithPrompt) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.runtime.llm.set(client)
+		o.llm.set(client)
 	}
 }
 
@@ -84,7 +87,7 @@ type LLMWithPrompt interface {
 // Deprecated: (since v0.0.13) use WithAudioOutputV0 instead, we want to free up this option
 func WithAudioOutput(client AudioOutputV0) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.runtime.audioOutput.Set(client)
+		o.audioOutput.Set(client)
 	}
 }
 
@@ -95,7 +98,7 @@ func WithAudioOutput(client AudioOutputV0) OrchestratorOption {
 // Deprecated: (since v0.0.16)
 func (o *Orchestrator) QueuePrompt(prompt string) {
 	go func() {
-		if ok := o.conversation.Enqueue(events.NewUserPromptEvent(prompt)); !ok {
+		if ok := o.eventPlayer.Ingest(events.NewUserPromptEvent(prompt)); !ok {
 			log.Printf("Warning: failed to queue prompt")
 		}
 	}()
@@ -144,10 +147,106 @@ func (t *turns) Push(turn llms.Turn) {
 //
 // Deprecated: (since v0.0.15) no direct replacement is available.
 func (t *activeConversation) appendTurns(turns ...llms.TurnV1) {
+	t.legacyAppendTurns(turns...)
+}
+
+// Deprecated: internal compatibility shim for deprecated conversation mutation APIs.
+func (t *activeConversation) legacyAppendTurns(turns ...llms.TurnV1) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	t.turns = append(t.turns, turns...)
+}
+
+// Deprecated: internal compatibility shim for deprecated conversation mutation APIs.
+func (t *activeConversation) legacyResetActiveTurnIfMatches(activeTurn *activeTurn) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.activeTurn != activeTurn || t.activeTurn == nil {
+		return false
+	}
+
+	t.activeTurn.Responses = nil
+	t.activeTurn.ToolCalls = nil
+	t.activeTurn.Interruptions = nil
+	t.activeTurn.IsFinalised = false
+	return true
+}
+
+// Deprecated: internal compatibility shim for deprecated conversation mutation APIs.
+func (t *activeConversation) legacyClearActiveTurnIfMatches(activeTurn *activeTurn) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.activeTurn != activeTurn || t.activeTurn == nil {
+		return false
+	}
+
+	t.activeTurn = nil
+	return true
+}
+
+// Deprecated: internal compatibility shim for deprecated conversation mutation APIs.
+func (t *activeConversation) legacyPopOldHistoryTurn() *llms.Turn {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(t.turns) == 0 {
+		return nil
+	}
+
+	lastElementIdx := len(t.turns) - 1
+	turn := t.turns[lastElementIdx]
+	turns := llms.ToTurnsV0FromV1([]llms.TurnV1{turn})
+	if len(turns) > 1 {
+		t.turns[lastElementIdx].Responses = nil
+		t.turns[lastElementIdx].ToolCalls = nil
+		t.turns[lastElementIdx].Interruptions = nil
+		t.turns[lastElementIdx].IsFinalised = false
+		return &turns[1]
+	}
+
+	t.turns = t.turns[:lastElementIdx]
+	return &turns[0]
+}
+
+// Deprecated: internal compatibility shim for deprecated conversation mutation APIs.
+func (t *activeConversation) legacyDetachActiveTurn() *activeTurn {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.activeTurn == nil {
+		return nil
+	}
+
+	activeTurn := t.activeTurn
+	t.activeTurn = nil
+	return activeTurn
+}
+
+// Deprecated: internal compatibility shim for deprecated conversation mutation APIs.
+func (t *activeConversation) legacyPopHistoryTurn() *llms.TurnV1 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(t.turns) == 0 {
+		return nil
+	}
+
+	lastElementIdx := len(t.turns) - 1
+	turn := t.turns[lastElementIdx]
+	t.turns = t.turns[:lastElementIdx]
+	return &turn
+}
+
+// Deprecated: internal compatibility shim for deprecated conversation mutation APIs.
+func (t *activeConversation) legacyClearState() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.turns = nil
+	t.activeTurn = nil
 }
 
 // Pop is a deprecated method that is used to provide backwards compatibility
@@ -164,47 +263,23 @@ func (t *turns) Pop() *llms.Turn {
 //
 // Deprecated: (since v0.0.15) use [github.com/koscakluka/ema-core/core/conversations.ActiveContextV0] instead.
 func (t *activeConversation) popOld() *llms.Turn {
-	activeTurn := t.activeTurnRef()
+	t.mu.RLock()
+	activeTurn := t.activeTurn
+	t.mu.RUnlock()
 	if activeTurn != nil {
-		activeTurn.Cancel()
+		if pipeline := t.activePipeline(); pipeline != nil {
+			pipeline.Cancel()
+		}
 		turns := llms.ToTurnsV0FromV1([]llms.TurnV1{activeTurn.TurnV1})
 		if len(turns) > 1 {
-			t.mu.Lock()
-			if t.activeTurn == activeTurn {
-				t.activeTurn.Responses = nil
-				t.activeTurn.ToolCalls = nil
-				t.activeTurn.Interruptions = nil
-				t.activeTurn.IsFinalised = false
-			}
-			t.mu.Unlock()
+			t.legacyResetActiveTurnIfMatches(activeTurn)
 			return &turns[1]
 		}
-		t.mu.Lock()
-		if t.activeTurn == activeTurn {
-			t.activeTurn = nil
-		}
-		t.mu.Unlock()
+		t.legacyClearActiveTurnIfMatches(activeTurn)
 		return &turns[0]
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if len(t.turns) == 0 {
-		return nil
-	}
-	lastElementIdx := len(t.turns) - 1
-	turn := t.turns[lastElementIdx]
-	turns := llms.ToTurnsV0FromV1([]llms.TurnV1{turn})
-	if len(turns) > 1 {
-		t.turns[lastElementIdx].Responses = nil
-		t.turns[lastElementIdx].ToolCalls = nil
-		t.turns[lastElementIdx].Interruptions = nil
-		t.turns[lastElementIdx].IsFinalised = false
-		return &turns[1]
-	}
-	t.turns = t.turns[:lastElementIdx]
-	return &turns[0]
+	return t.legacyPopOldHistoryTurn()
 }
 
 // Clear is a deprecated method that is used to provide backwards compatibility
@@ -252,37 +327,34 @@ func (t *turns) RValues(yield func(llms.Turn) bool) {
 //
 // Deprecated: (since v0.0.17) use [github.com/koscakluka/ema-core/core/conversations.ActiveContextV0] instead.
 func (t *activeConversation) Pop() *llms.TurnV1 {
-	t.mu.Lock()
-	if activeTurn := t.activeTurn; activeTurn != nil {
-		t.activeTurn = nil
+	if activeTurn := t.legacyDetachActiveTurn(); activeTurn != nil {
 		turn := activeTurn.TurnV1
-		t.mu.Unlock()
-
-		activeTurn.Cancel()
+		if pipeline := t.activePipeline(); pipeline != nil {
+			pipeline.Cancel()
+		}
 		return &turn
 	}
 
-	if len(t.turns) == 0 {
-		t.mu.Unlock()
+	return t.legacyPopHistoryTurn()
+}
+
+// activePipeline returns the current response pipeline, or nil if there is none.
+//
+// Deprecated: (since v0.0.17)
+// HACK: This is to allow backwards compatibility with the old
+func (t *activeConversation) activePipeline() *responsePipeline {
+	if t == nil || t.currentPipeline == nil {
 		return nil
 	}
-	lastElementIdx := len(t.turns) - 1
-	turn := t.turns[lastElementIdx]
-	t.turns = t.turns[:lastElementIdx]
-	t.mu.Unlock()
 
-	return &turn
+	return t.currentPipeline()
 }
 
 // Clear removes all stored turns
 //
 // Deprecated: (since v0.0.17) use [github.com/koscakluka/ema-core/core/conversations.ActiveContextV0] instead.
 func (t *activeConversation) Clear() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.turns = nil
-	t.activeTurn = nil
+	t.legacyClearState()
 }
 
 // Values is an iterator that goes over all the stored turns starting from the
@@ -324,4 +396,86 @@ func (t *activeConversation) RValues(yield func(llms.TurnV1) bool) {
 // ConversationV0 returns the legacy mutable conversation view.
 //
 // Deprecated: (since v0.0.17) use [github.com/koscakluka/ema-core/core/conversations.ActiveContextV0] via [EventHandlerV0.HandleV0] instead.
-func (o *Orchestrator) ConversationV0() emaContext.ConversationV0 { return &o.conversation }
+func (o *Orchestrator) ConversationV0() emaContext.ConversationV0 {
+	return &o.conversation
+}
+
+// CallTool is a deprecated method that was used to execute tool calls
+// from interruptions. It is no longer necessary to call this method.
+//
+// Deprecated: (since v0.0.17) events instead.
+func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
+	ctx, span := tracer.Start(ctx, "call tool with prompt")
+	defer span.End()
+	runtimeLLM := o.llm.snapshot()
+	_, err := runtimeLLM.generate(
+		ctx,
+		events.NewUserPromptEvent(prompt),
+		o.conversation.History(),
+		newTextBuffer(),
+		func() bool { return o.currentResponsePipeline().IsCancelled() },
+	)
+	return err
+}
+
+// StartRecording starts recording audio input.
+//
+// Deprecated: (since v0.0.17) use RequestToCaptureAudio instead
+func (o *Orchestrator) StartRecording() error { return o.RequestToCaptureAudio() }
+
+// StopRecording stops recording audio input.
+//
+// Deprecated: (since v0.0.17) use StopRequestingToCaptureAudio instead
+func (o *Orchestrator) StopRecording() error { return o.StopRequestingToCaptureAudio() }
+
+// EnableAlwaysRecording enables continuous recording.
+//
+// Deprecated: (since v0.0.17) use EnableAlwaysCapturingAudio instead
+func (o *Orchestrator) EnableAlwaysRecording(ctx context.Context) error {
+	return o.EnableAlwaysCapturingAudio()
+}
+
+// DisableAlwaysRecording disables continuous recording.
+//
+// Deprecated: (since v0.0.17) use DisableAlwaysCapturingAudio instead
+func (o *Orchestrator) DisableAlwaysRecording(ctx context.Context) error {
+	return o.DisableAlwaysCapturingAudio()
+}
+
+// IsAlwaysRecording indicates whether the orchestrator is currently recording
+// audio input.
+//
+// Deprecated: (since v0.0.17) use IsAlwaysCapturingAudio instead
+func (o *Orchestrator) IsAlwaysRecording() bool { return o.IsAlwaysCapturingAudio() }
+
+// SetAlwaysRecording enables or disables continuous recording of audio input.
+//
+// Deprecated: (since v0.0.17) use EnableAlwaysCapturingAudio or DisableAlwaysCapturingAudio instead
+func (o *Orchestrator) SetAlwaysRecording(isAlwaysRecording bool) {
+	var err error
+	if isAlwaysRecording {
+		err = o.EnableAlwaysCapturingAudio()
+	} else {
+		err = o.DisableAlwaysCapturingAudio()
+	}
+
+	if err != nil {
+		recordedErr := fmt.Errorf("failed to set always recording to %t: %w", isAlwaysRecording, err)
+		span := trace.SpanFromContext(o.baseContext)
+		span.RecordError(recordedErr)
+		span.SetStatus(codes.Error, recordedErr.Error())
+	}
+}
+
+// SetSpeaking sets the orchestrator's speaking state. If the orchestrator is
+// currently passing speech to audio output, it will stop passing speech to
+// audio output, and vice versa.
+//
+// Deprecated: (since v0.0.17) use [Orchestrator.Mute] or [Orchestrator.Unmute]
+func (o *Orchestrator) SetSpeaking(isSpeaking bool) {
+	if isSpeaking {
+		o.Unmute()
+	} else {
+		o.Mute()
+	}
+}
