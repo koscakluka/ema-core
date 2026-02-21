@@ -8,6 +8,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v0.0.17] - 2026-02-21
+
 ### Added
 
 - `core/EventHandlerV0` and `core/WithEventHandlerV0` for plugging custom event
@@ -17,8 +19,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `core/ConversationV1` as a point-in-time conversation view returned by
   `core/Orchestrator.ConversationV1`
 - `core/events/interruptions` event handlers (`NewEventHandlerWithStructuredPrompt`
-  and `NewEventHandlerWithGeneralPrompt`) that combine basic event processing
-  and interruption classification
+  and `NewEventHandlerWithGeneralPrompt`) for integrated event processing and
+  interruption classification
 - interruption lifecycle event types in `core/events` for recording,
   resolving, and canceling turns during interruption handling
 
@@ -29,64 +31,36 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `core/Config` and `core/WithConfig`; use `core/Orchestrator.SetAlwaysRecording`
   for recording behavior instead
 - legacy `TurnsV0`/`ConversationV0` mutation APIs and deprecated option aliases
-  are explicitly treated as compatibility-only shims
+  are compatibility-only shims
 
 ### Changed
 
 - interruption handling now runs through the event-handler pipeline, so custom
   handlers can influence turn cancellation, continuation prompts, and tool calls
-- speaking/transcription orchestrate callbacks are now emitted from speech-to-
-  text runtime callbacks; manually injected events via `Orchestrator.Handle` do
-  not invoke these callback hooks
-- orchestrator event queue lifecycle is now conversation-owned via internal
-  conversation start/end runtime helpers, replacing assistant-loop-specific
-  orchestrator loop state while preserving single-consumer turn sequencing
-- orchestrator always-recording state now lives in audio-input runtime state
-  instead of shared orchestrator config pointers
-- active turns now snapshot the configured audio-output facade at turn start, so
-  runtime client reconfiguration does not alter in-flight turn output behavior
-- turn execution dependencies (LLM, TTS client, audio output, speaking state,
-  and runtime callbacks) are now snapshotted per turn from a single runtime
-  state owner, so config changes apply only to subsequent turns
+- speaking/transcription orchestrate callbacks are emitted from live speech
+  runtime callbacks; manually injected events via `Orchestrator.Handle` do not
+  invoke these callback hooks
+- prompts queued before `Orchestrate` starts are kept and processed once runtime
+  is active
+- turn execution dependencies are fixed at turn start, so client/config updates
+  apply to subsequent turns instead of altering in-flight behavior
 
 ### Fixed
 
+- prompt, stream, tool, and interruption-classifier failures now propagate as
+  explicit errors instead of being silently ignored
+- shutdown is now idempotent and queue-safe under concurrent activity, with
+  active turns canceled cleanly
+- startup failures no longer terminate the process via fatal exits and are
+  surfaced as recoverable errors
+- cancel-turn events now bypass interruption classification in built-in
+  handlers, so cancellation requests are not swallowed while a turn is active
 - OpenAI and Groq LLM clients now close HTTP response bodies in all code paths,
-  including per-request handling inside Groq prompt loops
-- Deepgram TTS stream opening now wraps invalid encoding errors correctly,
-  preserving the underlying cause
-- active turn cancellation now uses an atomic cancel state with idempotent
-  `Cancel` handling, so cancellation checks reliably gate turn processing
-- active turn worker errors are now aggregated across response/text/speech
-  processors (including panic recovery) and propagated after safe finalization
-- assistant queue processing now relies on single-consumer sequencing instead of
-  redundant per-turn waitgroup gating, avoiding fragile turn-finalize coupling
-- prompt, stream, tool, and interruption-classifier failures in orchestration
-  now propagate as explicit errors instead of being silently ignored
-- orchestrator shutdown is now idempotent and safe under concurrent activity:
-  queueing is rejected after close, active turns are cancelled, and the assistant
-  loop exits through an explicit close signal without channel-close panics
-- orchestrator and audio client startup no longer abort the process via
-  `log.Fatalf`; initialization failures are now returned/recorded as recoverable
-  errors
-- active turn finalization now closes legacy TTS streams reliably (with
-  idempotent close handling) and records close failures on turn spans
-- OpenAI turn-history serialization now preserves turns after tool-call turns,
-  preventing conversation context truncation in follow-up requests
-- conversation state access and active-turn lifecycle finalization now run through
-  synchronized conversation-owned helpers, reducing race-prone direct mutation
-  from assistant-loop callbacks and control paths
-- cancel-turn events now bypass interruption classification in built-in handlers,
-  ensuring turn cancellation requests are not swallowed while a turn is active
-- prompts queued before `Orchestrate` now remain buffered until runtime starts,
-  and failed enqueue attempts are surfaced via warnings instead of silent drops
-- `SetSpeaking(true)` no longer stops the active turn's speech pipeline
-- LLM-dependent orchestration paths now treat missing LLM clients as no-op
-  generation and still invoke response-end callbacks for turn completion hooks
-- audio output facade setup now treats typed-nil clients as unconfigured,
-  preventing invalid configured state and nil method dispatch
-- active-turn speaking state now uses an atomic mute flag, reducing race risk
-  between control operations and speech processing
+  and OpenAI history after tool calls is preserved
+- Deepgram TTS invalid encoding errors now preserve the underlying cause
+- typed-nil audio input/output clients are treated as unconfigured, preventing
+  invalid runtime state and nil dispatch
+- `SetSpeaking(true)` no longer stops an active turn's speech pipeline
 
 ## [v0.0.16] - 2026-02-16
 
@@ -261,7 +235,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [v0.0.12] - 2025-11-05
 
-[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.16...HEAD
+[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.17...HEAD
+[v0.0.17]: https://github.com/koscakluka/ema-core/compare/v0.0.16...v0.0.17
 [v0.0.16]: https://github.com/koscakluka/ema-core/compare/v0.0.15...v0.0.16
 [v0.0.15]: https://github.com/koscakluka/ema-core/compare/v0.0.14...v0.0.15
 [v0.0.14]: https://github.com/koscakluka/ema-core/compare/v0.0.13...v0.0.14
