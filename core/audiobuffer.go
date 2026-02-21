@@ -172,6 +172,13 @@ func (b *audioBuffer) audioDone() bool {
 	return b.audioDoneLocked()
 }
 
+func (b *audioBuffer) ApproximatePlayhead() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.approximatePlayheadLocked(time.Now())
+}
+
 // audioDoneLocked is a version of [audioBuffer.audioDone] that is safe to call
 // from a locked context.
 func (b *audioBuffer) audioDoneLocked() bool {
@@ -271,8 +278,8 @@ func (b *audioBuffer) Pause() {
 		return
 	}
 
-	b.paused = true
 	b.rewindLocked()
+	b.paused = true
 	b.mu.Unlock()
 	b.signalUpdate()
 }
@@ -283,25 +290,46 @@ func (b *audioBuffer) rewindLocked() {
 	// it takes for use to receive the information that the audio was played)
 	// TODO: Consider identifying silences in the audio so we can continue from
 	// there and make the unpausing seem smoother (as a human would do)
-	playedDuration := time.Since(b.lastMarkTimestamp)
-	samplesPlayed := audioSamples(playedDuration, b.encodingInfo)
-	chunksPlayed := 0
-	for _, chunk := range b.audio[b.externalPlayhead:] {
-		samplesPlayed -= len(chunk)
-		if samplesPlayed < 0 {
-			// TODO: See what to do with underplayed audio, so far it hasn't
-			// been an issue
-			break
-		}
-		chunksPlayed++
-	}
-	b.externalPlayhead += chunksPlayed
+	b.externalPlayhead = b.approximatePlayheadLocked(time.Now())
 	b.internalPlayhead = b.externalPlayhead
 	for i, mark := range b.marks {
 		if mark.position > b.internalPlayhead {
 			b.marks[i].broadcasted = false
 		}
 	}
+}
+
+// approximatePlayheadLocked estimates the currently played chunk index using
+// external marks as the source of truth and elapsed time since the last
+// confirmation as interpolation.
+func (b *audioBuffer) approximatePlayheadLocked(now time.Time) int {
+	approxPlayhead := b.externalPlayhead
+	if approxPlayhead > b.internalPlayhead {
+		return b.internalPlayhead
+	}
+
+	if b.paused || b.stopped || b.lastMarkTimestamp.IsZero() {
+		return approxPlayhead
+	}
+
+	playedSamples := audioSamples(now.Sub(b.lastMarkTimestamp), b.encodingInfo)
+	if playedSamples <= 0 {
+		return approxPlayhead
+	}
+
+	for i := b.externalPlayhead; i < b.internalPlayhead; i++ {
+		playedSamples -= len(b.audio[i])
+		if playedSamples < 0 {
+			break
+		}
+		approxPlayhead++
+	}
+
+	if approxPlayhead > b.internalPlayhead {
+		return b.internalPlayhead
+	}
+
+	return approxPlayhead
 }
 
 func (b *audioBuffer) Resume() {

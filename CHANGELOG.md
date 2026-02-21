@@ -8,6 +8,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `core/audioBuffer.ApproximatePlayhead` to estimate live playback position from
+  confirmed external marks and elapsed audio time
+
+### Changed
+
+- audio buffer rewind now uses the same approximate playhead function so pause
+  behavior stays aligned with external playhead timing
+
 ## [v0.0.17] - 2026-02-21
 
 ### Added
