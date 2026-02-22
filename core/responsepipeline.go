@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/koscakluka/ema-core/core/llms"
 	"go.opentelemetry.io/otel/attribute"
@@ -193,13 +194,16 @@ textLoop:
 		if err := processor.textToSpeech.SendText(chunk); err != nil {
 			span.RecordError(fmt.Errorf("failed to send text to tts: %w", err))
 		}
+		processor.speechPlayer.AddText(chunk)
 		if processor.audioOutput.supportsCallbackMarks && strings.ContainsAny(chunk, ".?!") {
+			processor.speechPlayer.Mark()
 			if err := processor.textToSpeech.Mark(); err != nil {
 				span.RecordError(fmt.Errorf("failed to send mark to tts: %w", err))
 			}
 		}
 	}
 
+	processor.speechPlayer.Mark()
 	if err := processor.textToSpeech.EndOfText(); err != nil {
 		span.RecordError(fmt.Errorf("failed to end of text to tts: %w", err))
 	}
@@ -232,6 +236,41 @@ func (processor *responsePipeline) processSpeech(
 	_, span := tracer.Start(ctx, "passing speech to audio output")
 	defer span.End()
 
+	const minSpokenTextUpdateInterval = 10 * time.Millisecond
+	const maxSpokenTextUpdateInterval = 250 * time.Millisecond
+
+	clampSpokenTextUpdateInterval := func(interval time.Duration) time.Duration {
+		if interval < minSpokenTextUpdateInterval {
+			return minSpokenTextUpdateInterval
+		}
+		if interval > maxSpokenTextUpdateInterval {
+			return maxSpokenTextUpdateInterval
+		}
+		return interval
+	}
+
+	approximationDone := make(chan struct{})
+	go func() {
+		progress, nextUpdate := processor.audioBuffer.ApproximateCurrentSegmentProgressAndNextUpdate()
+		processor.speechPlayer.EmitApproximateSpokenText(progress)
+
+		timer := time.NewTimer(clampSpokenTextUpdateInterval(nextUpdate))
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-approximationDone:
+				return
+			case <-timer.C:
+				progress, nextUpdate = processor.audioBuffer.ApproximateCurrentSegmentProgressAndNextUpdate()
+				processor.speechPlayer.EmitApproximateSpokenText(progress)
+				timer.Reset(clampSpokenTextUpdateInterval(nextUpdate))
+			}
+		}
+	}()
+	defer close(approximationDone)
+
 bufferReadingLoop:
 	for audioOrMark := range processor.audioBuffer.Audio {
 		switch audioOrMark.Type {
@@ -254,6 +293,8 @@ bufferReadingLoop:
 					turn.finalResponse.SpokenResponse += *transcript
 				}
 				processor.audioBuffer.ConfirmMark(mark)
+				processor.speechPlayer.ConfirmMark()
+				processor.speechPlayer.EmitApproximateSpokenText(processor.audioBuffer.ApproximateCurrentSegmentProgress())
 			})
 		}
 	}

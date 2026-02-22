@@ -131,6 +131,8 @@ type OrchestrateOptions struct {
 	onInputAudio           func(audio []byte)
 	onAudio                func(audio []byte)
 	onAudioEnded           func(transcript string)
+	onSpokenText           func(spokenText string)
+	onSpokenTextDelta      func(spokenTextDelta string)
 }
 
 type OrchestrateOption func(*OrchestrateOptions)
@@ -195,6 +197,26 @@ func WithAudioCallback(callback func(audio []byte)) OrchestrateOption {
 func WithAudioEndedCallback(callback func(transcript string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
 		o.onAudioEnded = callback
+	}
+}
+
+// WithSpokenTextCallback registers a callback for spoken-text progress updates.
+//
+// The callback receives mark-confirmed text plus a best-effort approximation of
+// the current in-flight segment while audio is playing.
+func WithSpokenTextCallback(callback func(spokenText string)) OrchestrateOption {
+	return func(o *OrchestrateOptions) {
+		o.onSpokenText = callback
+	}
+}
+
+// WithSpokenTextDeltaCallback registers a callback for spoken-text deltas.
+//
+// The callback receives only incremental additions when possible. If spoken
+// text regresses (for example after a rewind), it receives a replacement value.
+func WithSpokenTextDeltaCallback(callback func(spokenTextDelta string)) OrchestrateOption {
+	return func(o *OrchestrateOptions) {
+		o.onSpokenTextDelta = callback
 	}
 }
 

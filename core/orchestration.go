@@ -149,6 +149,8 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 	o.llm.setResponseCallbacks(orchestrateOptions.onResponse, orchestrateOptions.onResponseEnd)
 	o.textToSpeech.SetCallbacks(orchestrateOptions.onAudio)
 	o.speechPlayer.SetCallbacks(orchestrateOptions.onAudioEnded)
+	o.speechPlayer.SetSpokenTextCallback(orchestrateOptions.onSpokenText)
+	o.speechPlayer.SetSpokenTextDeltaCallback(orchestrateOptions.onSpokenTextDelta)
 	o.eventPlayer.SetOnCancel(orchestrateOptions.onCancellation)
 	o.speechToText.SetCallbacks(speechToTextCallbacks{
 		onSpeechStateChanged: func(isSpeaking bool) {
