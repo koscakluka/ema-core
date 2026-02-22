@@ -8,6 +8,8 @@ import (
 	"github.com/koscakluka/ema-core/core/audio"
 )
 
+const defaultApproximateUpdateDelay = 120 * time.Millisecond
+
 type audioBuffer struct {
 	mu sync.Mutex
 
@@ -179,6 +181,20 @@ func (b *audioBuffer) ApproximatePlayhead() int {
 	return b.approximatePlayheadLocked(time.Now())
 }
 
+func (b *audioBuffer) ApproximateCurrentSegmentProgress() float64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.approximateCurrentSegmentProgressLocked(time.Now())
+}
+
+func (b *audioBuffer) ApproximateCurrentSegmentProgressAndNextUpdate() (float64, time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.approximateCurrentSegmentProgressAndNextUpdateLocked(time.Now())
+}
+
 // audioDoneLocked is a version of [audioBuffer.audioDone] that is safe to call
 // from a locked context.
 func (b *audioBuffer) audioDoneLocked() bool {
@@ -332,6 +348,71 @@ func (b *audioBuffer) approximatePlayheadLocked(now time.Time) int {
 	return approxPlayhead
 }
 
+func (b *audioBuffer) approximateCurrentSegmentProgressLocked(now time.Time) float64 {
+	progress, _ := b.approximateCurrentSegmentProgressAndNextUpdateLocked(now)
+	return progress
+}
+
+func (b *audioBuffer) approximateCurrentSegmentProgressAndNextUpdateLocked(now time.Time) (float64, time.Duration) {
+	segmentStart := b.externalPlayhead
+	segmentEnd := -1
+	for _, mark := range b.marks {
+		if mark.confirmed {
+			continue
+		}
+		if mark.position <= segmentStart {
+			continue
+		}
+		segmentEnd = mark.position
+		break
+	}
+
+	if segmentEnd <= segmentStart {
+		return 0, b.approximateNextPlayheadStepDelayLocked(now)
+	}
+
+	approxPlayhead := b.approximatePlayheadLocked(now)
+	if approxPlayhead <= segmentStart {
+		return 0, b.approximateNextPlayheadStepDelayLocked(now)
+	}
+	if approxPlayhead >= segmentEnd {
+		return 1, b.approximateNextPlayheadStepDelayLocked(now)
+	}
+
+	return float64(approxPlayhead-segmentStart) / float64(segmentEnd-segmentStart), b.approximateNextPlayheadStepDelayLocked(now)
+}
+
+func (b *audioBuffer) approximateNextPlayheadStepDelayLocked(now time.Time) time.Duration {
+	if b.paused || b.stopped || b.lastMarkTimestamp.IsZero() {
+		return defaultApproximateUpdateDelay
+	}
+
+	if b.externalPlayhead >= b.internalPlayhead || b.externalPlayhead >= len(b.audio) {
+		return defaultApproximateUpdateDelay
+	}
+
+	playedSamples := audioSamples(now.Sub(b.lastMarkTimestamp), b.encodingInfo)
+	if playedSamples < 0 {
+		playedSamples = 0
+	}
+
+	for i := b.externalPlayhead; i < b.internalPlayhead && i < len(b.audio); i++ {
+		chunkSize := len(b.audio[i])
+		if playedSamples < chunkSize {
+			remaining := chunkSize - playedSamples
+			delay := samplesDuration(remaining, b.encodingInfo)
+			if delay <= 0 {
+				return defaultApproximateUpdateDelay
+			}
+			return delay
+		}
+
+		playedSamples -= chunkSize
+	}
+
+	return defaultApproximateUpdateDelay
+}
+
 func (b *audioBuffer) Resume() {
 	b.mu.Lock()
 	if b.audioDoneLocked() || !b.paused {
@@ -383,4 +464,17 @@ func audioDuration(audio [][]byte, encodingInfo audio.EncodingInfo) time.Duratio
 
 func audioSamples(duration time.Duration, encodingInfo audio.EncodingInfo) int {
 	return int(float64(duration) / float64(time.Second) * float64(encodingInfo.SampleRate) * float64(encodingInfo.Format.ByteSize()))
+}
+
+func samplesDuration(samples int, encodingInfo audio.EncodingInfo) time.Duration {
+	if samples <= 0 {
+		return 0
+	}
+
+	bytesPerSecond := encodingInfo.SampleRate * encodingInfo.Format.ByteSize()
+	if bytesPerSecond <= 0 {
+		return 0
+	}
+
+	return time.Duration(float64(samples) / float64(bytesPerSecond) * float64(time.Second))
 }
