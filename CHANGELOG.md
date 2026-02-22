@@ -23,6 +23,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   with dedicated setters for speaking, interim/final transcription, and event
   invocation
 
+### Fixed
+
+- Deepgram STT callback dispatch now normalizes unset callbacks to no-op handlers
+  and consistently emits configured interim/final/speech-state callbacks without
+  scattered nil checks
+
 ## [v0.0.17] - 2026-02-21
 
 ### Added

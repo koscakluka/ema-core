@@ -25,6 +25,8 @@ func (s *TranscriptionClient) Transcribe(ctx context.Context, opts ...speechtote
 		opt(options)
 	}
 
+	callbacks, websocketConfig := newCallbackConfig(*options)
+
 	encoding, err := convertEncoding(options.EncodingInfo)
 	if err != nil {
 		return fmt.Errorf("invalid encoding: %w", err)
@@ -34,17 +36,16 @@ func (s *TranscriptionClient) Transcribe(ctx context.Context, opts ...speechtote
 		sampleRate: encoding.SampleRate,
 		encoding:   encoding.Format.Name(),
 
-		detectSpeechStart: options.SpeechStartedCallback != nil,
-		enhanceSpeechEndingDetection: options.TranscriptionCallback != nil ||
-			options.SpeechEndedCallback != nil,
-		interimResults: options.InterimTranscriptionCallback != nil,
+		detectSpeechStart:            websocketConfig.shouldDetectSpeechStart,
+		enhanceSpeechEndingDetection: websocketConfig.shouldEnhanceSpeechEndingDetection,
+		interimResults:               websocketConfig.shouldRequestInterimResults,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to open websocket: %w", err)
 	}
 
 	s.conn = conn
-	go s.readAndProcessMessages(ctx, conn, *options)
+	go s.readAndProcessMessages(ctx, conn, options.EncodingInfo, callbacks)
 
 	return nil
 }
@@ -142,11 +143,11 @@ func (s *TranscriptionClient) StopStream() error {
 	return nil
 }
 
-func (s *TranscriptionClient) readAndProcessMessages(ctx context.Context, conn *websocket.Conn, options speechtotext.TranscriptionOptions) {
+func (s *TranscriptionClient) readAndProcessMessages(ctx context.Context, conn *websocket.Conn, encodingInfo audio.EncodingInfo, callbacks callbackConfig) {
 	silenceCtx, silenceCancel := context.WithCancel(ctx)
 	defer silenceCancel()
 
-	go s.generateSilence(silenceCtx, options.EncodingInfo)
+	go s.generateSilence(silenceCtx, encodingInfo)
 
 	for {
 		msgType, msg, err := conn.ReadMessage()
@@ -160,12 +161,12 @@ func (s *TranscriptionClient) readAndProcessMessages(ctx context.Context, conn *
 			return
 		}
 		if msgType != websocket.BinaryMessage {
-			go s.processMessage(ctx, msg, options)
+			go s.processMessage(msg, callbacks)
 		}
 	}
 }
 
-func (s *TranscriptionClient) processMessage(_ context.Context, msg []byte, options speechtotext.TranscriptionOptions) {
+func (s *TranscriptionClient) processMessage(msg []byte, callbacks callbackConfig) {
 	var parsedMsg struct {
 		Type string `json:"type"`
 	}
@@ -186,28 +187,20 @@ func (s *TranscriptionClient) processMessage(_ context.Context, msg []byte, opti
 			if len(msgResp.Channel.Alternatives) > 0 {
 				transcript := strings.TrimSpace(msgResp.Channel.Alternatives[0].Transcript)
 				if len(transcript) > 0 {
-					if options.TranscriptionCallback != nil {
-						s.accumulatedTranscript += " " + transcript
-					}
-					if options.PartialTranscriptionCallback != nil {
-						options.PartialTranscriptionCallback(transcript)
-					}
+					s.accumulatedTranscript += " " + transcript
+					callbacks.partialTranscriptionCallback(transcript)
 				}
 			}
 			if msgResp.SpeechFinal {
-				s.onSpeechEnded(options)
+				s.onSpeechEnded(callbacks)
 			}
 		}
-		if !msgResp.IsFinal &&
-			(options.PartialInterimTranscriptionCallback != nil || options.InterimTranscriptionCallback != nil) {
+		if !msgResp.IsFinal {
 			if len(msgResp.Channel.Alternatives) > 0 {
 				transcript := strings.TrimSpace(msgResp.Channel.Alternatives[0].Transcript)
 				if len(transcript) > 0 {
-					if options.PartialInterimTranscriptionCallback != nil {
-						options.PartialInterimTranscriptionCallback(transcript)
-					} else if options.InterimTranscriptionCallback != nil {
-						options.InterimTranscriptionCallback(s.accumulatedTranscript + " " + transcript)
-					}
+					callbacks.partialInterimTranscriptionCallback(transcript)
+					callbacks.interimTranscriptionCallback(s.accumulatedTranscript + " " + transcript)
 				}
 			}
 		}
@@ -220,7 +213,7 @@ func (s *TranscriptionClient) processMessage(_ context.Context, msg []byte, opti
 		}
 
 		if s.unendedSegment {
-			s.onSpeechEnded(options)
+			s.onSpeechEnded(callbacks)
 		}
 	case api.TypeSpeechStartedResponse:
 		var msgResp api.SpeechStartedResponse
@@ -230,25 +223,19 @@ func (s *TranscriptionClient) processMessage(_ context.Context, msg []byte, opti
 		}
 
 		s.unendedSegment = true
-		if options.SpeechStartedCallback != nil {
-			options.SpeechStartedCallback()
-		}
+		callbacks.startSpeechCallback()
 	}
 
 }
 
-func (s *TranscriptionClient) onSpeechEnded(options speechtotext.TranscriptionOptions) {
+func (s *TranscriptionClient) onSpeechEnded(callbacks callbackConfig) {
 	s.unendedSegment = false
-	if options.TranscriptionCallback != nil {
-		fullTranscript := strings.TrimSpace(s.accumulatedTranscript)
-		s.accumulatedTranscript = ""
-		if len(fullTranscript) > 0 {
-			options.TranscriptionCallback(fullTranscript)
-		}
+	fullTranscript := strings.TrimSpace(s.accumulatedTranscript)
+	s.accumulatedTranscript = ""
+	if len(fullTranscript) > 0 {
+		callbacks.transcriptionCallback(fullTranscript)
 	}
-	if options.SpeechEndedCallback != nil {
-		options.SpeechEndedCallback()
-	}
+	callbacks.endSpeechCallback()
 }
 
 func (s *TranscriptionClient) generateSilence(ctx context.Context, encoding audio.EncodingInfo) {
@@ -315,4 +302,60 @@ func (s *TranscriptionClient) generateSilence(ctx context.Context, encoding audi
 			}
 		}
 	}
+}
+
+type callbackConfig struct {
+	partialInterimTranscriptionCallback func(string)
+	interimTranscriptionCallback        func(string)
+	partialTranscriptionCallback        func(string)
+	transcriptionCallback               func(string)
+	startSpeechCallback                 func()
+	endSpeechCallback                   func()
+}
+
+type websocketConfig struct {
+	shouldDetectSpeechStart            bool
+	shouldEnhanceSpeechEndingDetection bool
+	shouldRequestInterimResults        bool
+}
+
+func newCallbackConfig(options speechtotext.TranscriptionOptions) (callbackConfig, websocketConfig) {
+	callbacks := callbackConfig{
+		partialInterimTranscriptionCallback: options.PartialInterimTranscriptionCallback,
+		interimTranscriptionCallback:        options.InterimTranscriptionCallback,
+		partialTranscriptionCallback:        options.PartialTranscriptionCallback,
+		transcriptionCallback:               options.TranscriptionCallback,
+		startSpeechCallback:                 options.SpeechStartedCallback,
+		endSpeechCallback:                   options.SpeechEndedCallback,
+	}
+	websocketConfig := websocketConfig{}
+
+	hasInterim := callbacks.interimTranscriptionCallback != nil
+	hasPartialInterim := callbacks.partialInterimTranscriptionCallback != nil
+
+	websocketConfig.shouldDetectSpeechStart = callbacks.startSpeechCallback != nil
+	websocketConfig.shouldEnhanceSpeechEndingDetection =
+		callbacks.transcriptionCallback != nil || callbacks.endSpeechCallback != nil
+	websocketConfig.shouldRequestInterimResults = hasInterim || hasPartialInterim
+
+	if callbacks.partialInterimTranscriptionCallback == nil {
+		callbacks.partialInterimTranscriptionCallback = func(string) {}
+	}
+	if callbacks.interimTranscriptionCallback == nil {
+		callbacks.interimTranscriptionCallback = func(string) {}
+	}
+	if callbacks.partialTranscriptionCallback == nil {
+		callbacks.partialTranscriptionCallback = func(string) {}
+	}
+	if callbacks.transcriptionCallback == nil {
+		callbacks.transcriptionCallback = func(string) {}
+	}
+	if callbacks.startSpeechCallback == nil {
+		callbacks.startSpeechCallback = func() {}
+	}
+	if callbacks.endSpeechCallback == nil {
+		callbacks.endSpeechCallback = func() {}
+	}
+
+	return callbacks, websocketConfig
 }
