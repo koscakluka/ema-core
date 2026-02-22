@@ -3,6 +3,9 @@ package orchestration
 import (
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/koscakluka/ema-core/core/audio"
 )
 
 type speechPlayer struct {
@@ -11,11 +14,15 @@ type speechPlayer struct {
 	onAudioEnded      func(string)
 	onSpokenText      func(string)
 	onSpokenTextDelta func(string)
+	textBuffer        *textBuffer
+	audioBuffer       *audioBuffer
 	text              []string
 	playedMarks       int
 
 	lastEmittedSpokenText string
 	hasEmittedSpokenText  bool
+
+	segmentationBoundaries string
 }
 
 func newSpeechPlayer() *speechPlayer {
@@ -23,7 +30,207 @@ func newSpeechPlayer() *speechPlayer {
 		onAudioEnded:      func(string) {},
 		onSpokenText:      func(string) {},
 		onSpokenTextDelta: func(string) {},
+		textBuffer:        newTextBuffer(),
 	}
+}
+
+func (p *speechPlayer) InitBuffers(encodingInfo audio.EncodingInfo, segmentationBoundaries string) {
+	p.lockFor(func() {
+		p.textBuffer = newTextBuffer()
+		p.audioBuffer = newAudioBuffer(encodingInfo)
+		p.text = nil
+		p.playedMarks = 0
+		p.lastEmittedSpokenText = ""
+		p.hasEmittedSpokenText = false
+		p.segmentationBoundaries = segmentationBoundaries
+	})
+}
+
+func (p *speechPlayer) AddTextChunk(chunk string) {
+	if chunk != "" {
+		p.lockFor(func() {
+			if p.textBuffer != nil {
+				p.textBuffer.AddChunk(chunk)
+			}
+		})
+	}
+}
+
+func (p *speechPlayer) TextOrMarks(yield func(textOrMark) bool) {
+	var textBuffer *textBuffer
+	var segmentationBoundaries string
+	p.rLockFor(func() {
+		textBuffer = p.textBuffer
+		segmentationBoundaries = p.segmentationBoundaries
+	})
+
+	if textBuffer != nil {
+		textBuffer.Chunks(func(chunk string) bool {
+			if !yield(textOrMark{Type: textOrMarkTypeText, Text: chunk}) {
+				return false
+			}
+
+			if chunk != "" {
+				// add text
+				p.lockFor(func() {
+					if len(p.text) == 0 {
+						p.text = append(p.text, "")
+					}
+					p.text[len(p.text)-1] += chunk
+				})
+			}
+			if segmentationBoundaries == "" || !strings.ContainsAny(chunk, segmentationBoundaries) {
+				return true
+			}
+
+			// mark
+			p.lockFor(func() { p.text = append(p.text, "") })
+			return yield(textOrMark{Type: textOrMarkTypeMark})
+		})
+	}
+}
+
+func (p *speechPlayer) TextComplete() {
+	p.rLockFor(func() {
+		if p.textBuffer != nil {
+			p.textBuffer.TextComplete()
+		}
+	})
+}
+
+func (p *speechPlayer) ClearText() {
+	p.rLockFor(func() {
+		if p.textBuffer != nil {
+			p.textBuffer.Clear()
+		}
+	})
+}
+
+func (p *speechPlayer) FullText() string {
+	var text string
+	p.rLockFor(func() {
+		if p.textBuffer != nil {
+			text = p.textBuffer.String()
+		}
+	})
+	return text
+}
+
+func (p *speechPlayer) AddAudioChunk(audio []byte) {
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			p.audioBuffer.AddAudio(audio)
+		}
+	})
+}
+
+func (p *speechPlayer) AddAudioMark(transcript string) {
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			p.audioBuffer.Mark(transcript)
+		}
+	})
+}
+
+func (p *speechPlayer) AllAudioLoaded() {
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			p.audioBuffer.AllAudioLoaded()
+		}
+	})
+}
+
+func (p *speechPlayer) EnableLegacyTTSMode() {
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			p.audioBuffer.SetUsingLegacyTTSMode()
+		}
+	})
+}
+
+func (p *speechPlayer) Audio(yield func(audioOrMark) bool) {
+	var audioBuffer *audioBuffer
+	p.rLockFor(func() { audioBuffer = p.audioBuffer })
+
+	if audioBuffer != nil {
+		audioBuffer.Audio(yield)
+	}
+}
+
+func (p *speechPlayer) OnAudioOutputMarkPlayed(id string) *string {
+	var transcript *string
+	p.lockFor(func() {
+		if p.audioBuffer != nil {
+			transcript = p.audioBuffer.GetMarkText(id)
+			p.audioBuffer.ConfirmMark(id)
+		}
+	})
+	p.ConfirmMark()
+	p.EmitApproximateSpokenText(p.ApproximateCurrentSegmentProgress())
+	return transcript
+}
+
+func (p *speechPlayer) ApproximateCurrentSegmentProgress() float64 {
+	var progress float64
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			progress = p.audioBuffer.ApproximateCurrentSegmentProgress()
+		}
+	})
+	return progress
+}
+
+func (p *speechPlayer) ApproximateCurrentSegmentProgressAndNextUpdate() (float64, time.Duration) {
+	progress, nextUpdate := 0.0, defaultApproximateUpdateDelay
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			progress, nextUpdate = p.audioBuffer.ApproximateCurrentSegmentProgressAndNextUpdate()
+		}
+	})
+	return progress, nextUpdate
+}
+
+func (p *speechPlayer) PauseAudio() {
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			p.audioBuffer.Pause()
+		}
+	})
+}
+
+func (p *speechPlayer) ResumeAudio() {
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			p.audioBuffer.Resume()
+		}
+	})
+}
+
+func (p *speechPlayer) StopAudio() {
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			p.audioBuffer.Stop()
+		}
+	})
+}
+
+func (p *speechPlayer) StopAudioAndUnblock() {
+	p.rLockFor(func() {
+		if p.audioBuffer != nil {
+			p.audioBuffer.AddAudio([]byte{})
+			p.audioBuffer.Stop()
+		}
+	})
+}
+
+func (p *speechPlayer) EmitApproximateSpokenTextFromAudioProgress() {
+	p.EmitApproximateSpokenText(p.ApproximateCurrentSegmentProgress())
+}
+
+func (p *speechPlayer) EmitApproximateSpokenTextFromAudioProgressAndNextUpdate() time.Duration {
+	progress, nextUpdate := p.ApproximateCurrentSegmentProgressAndNextUpdate()
+	p.EmitApproximateSpokenText(progress)
+	return nextUpdate
 }
 
 func (p *speechPlayer) Snapshot() *speechPlayer {
@@ -45,104 +252,62 @@ func (p *speechPlayer) Snapshot() *speechPlayer {
 }
 
 func (p *speechPlayer) SetCallbacks(onAudioEnded func(string)) {
-	if p == nil {
-		return
-	}
-
 	if onAudioEnded != nil {
-		p.mu.Lock()
-		p.onAudioEnded = onAudioEnded
-		p.mu.Unlock()
+		p.lockFor(func() { p.onAudioEnded = onAudioEnded })
 	}
 }
 
 func (p *speechPlayer) SetSpokenTextCallback(onSpokenText func(string)) {
-	if p == nil {
-		return
-	}
-
 	if onSpokenText != nil {
-		p.mu.Lock()
-		p.onSpokenText = onSpokenText
-		p.hasEmittedSpokenText = false
-		p.lastEmittedSpokenText = ""
-		p.mu.Unlock()
+		p.lockFor(func() {
+			p.onSpokenText = onSpokenText
+			p.hasEmittedSpokenText = false
+			p.lastEmittedSpokenText = ""
+		})
 	}
 }
 
 func (p *speechPlayer) SetSpokenTextDeltaCallback(onSpokenTextDelta func(string)) {
-	if p == nil {
-		return
-	}
-
 	if onSpokenTextDelta != nil {
-		p.mu.Lock()
-		p.onSpokenTextDelta = onSpokenTextDelta
-		p.hasEmittedSpokenText = false
-		p.lastEmittedSpokenText = ""
-		p.mu.Unlock()
+		p.lockFor(func() {
+			p.onSpokenTextDelta = onSpokenTextDelta
+			p.hasEmittedSpokenText = false
+			p.lastEmittedSpokenText = ""
+		})
 	}
-}
-
-func (p *speechPlayer) AddText(text string) {
-	if p == nil || text == "" {
-		return
-	}
-
-	p.mu.Lock()
-	if len(p.text) == 0 {
-		p.text = append(p.text, "")
-	}
-	p.text[len(p.text)-1] += text
-	p.mu.Unlock()
-}
-
-func (p *speechPlayer) Mark() {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.text = append(p.text, "")
 }
 
 func (p *speechPlayer) ConfirmMark() {
-	if p == nil {
-		return
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.playedMarks >= len(p.text) {
-		return
-	}
-	p.playedMarks++
+	p.lockFor(func() {
+		if p.playedMarks >= len(p.text) {
+			return
+		}
+		p.playedMarks++
+	})
 }
 
 func (p *speechPlayer) SpokenTextSoFar() string {
-	if p == nil {
-		return ""
-	}
+	var s string
+	p.rLockFor(func() {
+		if p.playedMarks <= 0 || len(p.text) == 0 {
+			s = ""
+			return
+		}
 
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+		maxSegments := p.playedMarks
+		if maxSegments > len(p.text) {
+			maxSegments = len(p.text)
+		}
 
-	if p.playedMarks <= 0 || len(p.text) == 0 {
-		return ""
-	}
+		var spoken strings.Builder
+		for i := 0; i < maxSegments; i++ {
+			spoken.WriteString(p.text[i])
+		}
 
-	maxSegments := p.playedMarks
-	if maxSegments > len(p.text) {
-		maxSegments = len(p.text)
-	}
+		s = spoken.String()
+	})
+	return s
 
-	var spoken strings.Builder
-	for i := 0; i < maxSegments; i++ {
-		spoken.WriteString(p.text[i])
-	}
-
-	return spoken.String()
 }
 
 func (p *speechPlayer) ApproximateSpokenTextSoFar(currentSegmentProgress float64) string {
@@ -222,15 +387,38 @@ func (p *speechPlayer) EmitApproximateSpokenText(currentSegmentProgress float64)
 }
 
 func (p *speechPlayer) OnAudioEnded(transcript string) {
-	if p == nil {
-		return
-	}
-
-	p.mu.RLock()
-	onAudioEnded := p.onAudioEnded
-	p.mu.RUnlock()
-
+	var onAudioEnded func(string)
+	p.rLockFor(func() { onAudioEnded = p.onAudioEnded })
 	if onAudioEnded != nil {
 		onAudioEnded(transcript)
 	}
 }
+
+func (p *speechPlayer) lockFor(f func()) {
+	if p != nil {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		f()
+	}
+
+}
+
+func (p *speechPlayer) rLockFor(f func()) {
+	if p != nil {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		f()
+	}
+}
+
+type textOrMark struct {
+	Type textOrMarkType
+	Text string
+}
+
+type textOrMarkType string
+
+const (
+	textOrMarkTypeText textOrMarkType = "text"
+	textOrMarkTypeMark textOrMarkType = "mark"
+)

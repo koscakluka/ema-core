@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,15 +15,14 @@ import (
 )
 
 const conversationEventQueueCapacity = 10
+const defaultSpeechPlayerSegmentationBoundaries = "?.!"
 
 type responsePipeline struct {
 	ctxMu sync.RWMutex
 	ctx   context.Context
 
 	llm          llm
-	textBuffer   *textBuffer
 	textToSpeech *textToSpeech
-	audioBuffer  *audioBuffer
 	speechPlayer *speechPlayer
 	audioOutput  *audioOutput
 
@@ -34,11 +32,15 @@ type responsePipeline struct {
 }
 
 func newResponsePipeline(llm llm, textToSpeech *textToSpeech, speechPlayer *speechPlayer, audioOutput *audioOutput, onCancel func()) *responsePipeline {
+	if audioOutput.supportsCallbackMarks {
+		speechPlayer.InitBuffers(audioOutput.EncodingInfo(), defaultSpeechPlayerSegmentationBoundaries)
+	} else {
+		speechPlayer.InitBuffers(audioOutput.EncodingInfo(), "")
+	}
+
 	return &responsePipeline{
 		llm:          llm,
-		textBuffer:   newTextBuffer(),
 		textToSpeech: textToSpeech,
-		audioBuffer:  newAudioBuffer(audioOutput.EncodingInfo()),
 		audioOutput:  audioOutput,
 		speechPlayer: speechPlayer,
 
@@ -137,7 +139,7 @@ func (processor *responsePipeline) generateLLM(ctx context.Context, turn *active
 	ctx, span := tracer.Start(ctx, "generate llm")
 	defer span.End()
 
-	response, err := processor.llm.generate(ctx, turn.Event, history, processor.textBuffer, func() bool {
+	response, err := processor.llm.generate(ctx, turn.Event, history, processor.speechPlayer.AddTextChunk, func() bool {
 		return processor.IsCancelled()
 	})
 	if err != nil {
@@ -157,7 +159,7 @@ func (processor *responsePipeline) generateLLM(ctx context.Context, turn *active
 		span.SetAttributes(attribute.StringSlice("assistant_turn.tool_calls", toolCalls))
 	}
 
-	processor.textBuffer.TextComplete()
+	processor.speechPlayer.TextComplete()
 	return nil
 }
 
@@ -170,7 +172,7 @@ func (processor *responsePipeline) processResponseText(
 	go func() {
 		select {
 		case <-ctx.Done():
-			processor.textBuffer.Clear()
+			processor.speechPlayer.ClearText()
 		case <-done:
 		}
 	}()
@@ -178,32 +180,33 @@ func (processor *responsePipeline) processResponseText(
 	_, span := tracer.Start(ctx, "passing text to tts")
 	defer span.End()
 
-	if err := processor.textToSpeech.init(ctx, processor); err != nil {
+	if err := processor.textToSpeech.init(ctx, processor.speechPlayer, processor.audioOutput.EncodingInfo()); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
 textLoop:
-	for chunk := range processor.textBuffer.Chunks {
+	for textOrMark := range processor.speechPlayer.TextOrMarks {
 		if processor.IsCancelled() {
 			break textLoop
 		}
-		turn.finalResponse.TypedMessage += chunk
 
-		if err := processor.textToSpeech.SendText(chunk); err != nil {
-			span.RecordError(fmt.Errorf("failed to send text to tts: %w", err))
-		}
-		processor.speechPlayer.AddText(chunk)
-		if processor.audioOutput.supportsCallbackMarks && strings.ContainsAny(chunk, ".?!") {
-			processor.speechPlayer.Mark()
+		switch textOrMark.Type {
+		case textOrMarkTypeText:
+			chunk := textOrMark.Text
+			turn.finalResponse.TypedMessage += chunk
+
+			if err := processor.textToSpeech.SendText(chunk); err != nil {
+				span.RecordError(fmt.Errorf("failed to send text to tts: %w", err))
+			}
+		case textOrMarkTypeMark:
 			if err := processor.textToSpeech.Mark(); err != nil {
 				span.RecordError(fmt.Errorf("failed to send mark to tts: %w", err))
 			}
 		}
 	}
 
-	processor.speechPlayer.Mark()
 	if err := processor.textToSpeech.EndOfText(); err != nil {
 		span.RecordError(fmt.Errorf("failed to end of text to tts: %w", err))
 	}
@@ -221,7 +224,7 @@ func (processor *responsePipeline) processSpeech(
 	go func() {
 		select {
 		case <-ctx.Done():
-			processor.audioBuffer.Stop()
+			processor.speechPlayer.StopAudio()
 		case <-done:
 		}
 	}()
@@ -249,10 +252,8 @@ func (processor *responsePipeline) processSpeech(
 		return interval
 	}
 
-	approximationDone := make(chan struct{})
 	go func() {
-		progress, nextUpdate := processor.audioBuffer.ApproximateCurrentSegmentProgressAndNextUpdate()
-		processor.speechPlayer.EmitApproximateSpokenText(progress)
+		nextUpdate := processor.speechPlayer.EmitApproximateSpokenTextFromAudioProgressAndNextUpdate()
 
 		timer := time.NewTimer(clampSpokenTextUpdateInterval(nextUpdate))
 		defer timer.Stop()
@@ -260,19 +261,17 @@ func (processor *responsePipeline) processSpeech(
 			select {
 			case <-ctx.Done():
 				return
-			case <-approximationDone:
+			case <-done:
 				return
 			case <-timer.C:
-				progress, nextUpdate = processor.audioBuffer.ApproximateCurrentSegmentProgressAndNextUpdate()
-				processor.speechPlayer.EmitApproximateSpokenText(progress)
+				nextUpdate = processor.speechPlayer.EmitApproximateSpokenTextFromAudioProgressAndNextUpdate()
 				timer.Reset(clampSpokenTextUpdateInterval(nextUpdate))
 			}
 		}
 	}()
-	defer close(approximationDone)
 
 bufferReadingLoop:
-	for audioOrMark := range processor.audioBuffer.Audio {
+	for audioOrMark := range processor.speechPlayer.Audio {
 		switch audioOrMark.Type {
 		case "audio":
 			audio := audioOrMark.Audio
@@ -289,17 +288,14 @@ bufferReadingLoop:
 			span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
 			processor.audioOutput.Mark(mark, func(mark string) {
 				span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
-				if transcript := processor.audioBuffer.GetMarkText(mark); transcript != nil {
+				if transcript := processor.speechPlayer.OnAudioOutputMarkPlayed(mark); transcript != nil {
 					turn.finalResponse.SpokenResponse += *transcript
 				}
-				processor.audioBuffer.ConfirmMark(mark)
-				processor.speechPlayer.ConfirmMark()
-				processor.speechPlayer.EmitApproximateSpokenText(processor.audioBuffer.ApproximateCurrentSegmentProgress())
 			})
 		}
 	}
 
-	processor.speechPlayer.OnAudioEnded(processor.textBuffer.String())
+	processor.speechPlayer.OnAudioEnded(processor.speechPlayer.FullText())
 	processor.audioOutput.SendAudio([]byte{})
 	processor.audioOutput.Clear()
 
@@ -311,7 +307,7 @@ func (p *responsePipeline) Pause() {
 		return
 	}
 
-	p.audioBuffer.Pause()
+	p.speechPlayer.PauseAudio()
 	p.audioOutput.Clear()
 }
 
@@ -320,7 +316,7 @@ func (p *responsePipeline) Unpause() {
 		return
 	}
 
-	p.audioBuffer.Resume()
+	p.speechPlayer.ResumeAudio()
 }
 
 func (p *responsePipeline) StopSpeaking() {
@@ -329,8 +325,7 @@ func (p *responsePipeline) StopSpeaking() {
 	}
 
 	p.textToSpeech.Mute()
-	p.audioBuffer.AddAudio([]byte{})
-	p.audioBuffer.Stop()
+	p.speechPlayer.StopAudioAndUnblock()
 	p.audioOutput.Clear()
 }
 
@@ -341,7 +336,7 @@ func (p *responsePipeline) Cancel() {
 
 	p.Close()
 	p.textToSpeech.Cancel()
-	p.audioBuffer.Stop()
+	p.speechPlayer.StopAudio()
 	p.audioOutput.Clear()
 	if p.onCancel != nil {
 		p.onCancel()

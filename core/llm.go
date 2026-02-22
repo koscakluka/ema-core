@@ -97,7 +97,7 @@ func (runtime *llm) generate(
 	ctx context.Context,
 	event llms.EventV0,
 	conversation []llms.TurnV1,
-	buffer *textBuffer,
+	onChunk func(string),
 	activeTurnCancelled func() bool,
 ) (*llms.Response, error) {
 	defer runtime.onResponseEnd()
@@ -108,10 +108,10 @@ func (runtime *llm) generate(
 
 	switch client := runtime.client.(type) {
 	case LLMWithStream:
-		return runtime.processStreaming(ctx, client, event, conversation, buffer, activeTurnCancelled)
+		return runtime.processStreaming(ctx, client, event, conversation, onChunk, activeTurnCancelled)
 
 	case LLMWithPrompt:
-		return runtime.processPrompt(ctx, client, event, conversation, buffer)
+		return runtime.processPrompt(ctx, client, event, conversation, onChunk)
 
 	default:
 		return nil, fmt.Errorf("unknown LLM type")
@@ -122,13 +122,15 @@ func (runtime *llm) processPrompt(ctx context.Context,
 	client LLMWithPrompt,
 	event llms.EventV0,
 	conversations []llms.TurnV1,
-	buffer *textBuffer,
+	onChunk func(string),
 ) (*llms.Response, error) {
 	response, err := client.Prompt(ctx, event.String(),
 		llms.WithTurnsV1(conversations...),
 		llms.WithTools(runtime.tools...),
 		llms.WithStream(func(chunk string) {
-			buffer.AddChunk(chunk)
+			if onChunk != nil {
+				onChunk(chunk)
+			}
 			runtime.onResponse(chunk)
 		}),
 	)
@@ -149,7 +151,7 @@ func (runtime *llm) processStreaming(ctx context.Context,
 	client LLMWithStream,
 	event llms.EventV0,
 	conversation []llms.TurnV1,
-	buffer *textBuffer,
+	onChunk func(string),
 	activeTurnCancelled func() bool,
 ) (*llms.Response, error) {
 	span := trace.SpanFromContext(ctx)
@@ -186,7 +188,9 @@ func (runtime *llm) processStreaming(ctx context.Context,
 				chunk := chunk.(llms.StreamContentChunk)
 
 				message.WriteString(chunk.Content())
-				buffer.AddChunk(chunk.Content())
+				if onChunk != nil {
+					onChunk(chunk.Content())
+				}
 				runtime.onResponse(chunk.Content())
 
 			case llms.StreamToolCallChunk:

@@ -287,6 +287,12 @@ func (b *audioBuffer) AllAudioLoaded() {
 	// supposed to have ended
 }
 
+func (b *audioBuffer) SetUsingLegacyTTSMode() {
+	b.mu.Lock()
+	b.usingWithLegacyTTS = true
+	b.mu.Unlock()
+}
+
 func (b *audioBuffer) Pause() {
 	b.mu.Lock()
 	if b.audioDoneLocked() || b.paused {

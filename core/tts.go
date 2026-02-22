@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/koscakluka/ema-core/core/audio"
 	"github.com/koscakluka/ema-core/core/texttospeech"
 )
 
@@ -85,7 +86,7 @@ func (t *textToSpeech) client() textToSpeechBase {
 	return t.base
 }
 
-func (t *textToSpeech) init(ctx context.Context, pipeline *responsePipeline) error {
+func (t *textToSpeech) init(ctx context.Context, speechPlayer *speechPlayer, encodingInfo audio.EncodingInfo) error {
 	if t == nil {
 		return nil
 	}
@@ -99,17 +100,17 @@ func (t *textToSpeech) init(ctx context.Context, pipeline *responsePipeline) err
 
 		ttsOptions := []texttospeech.TextToSpeechOption{
 			texttospeech.WithSpeechAudioCallback(func(audio []byte) {
-				pipeline.audioBuffer.AddAudio(audio)
+				speechPlayer.AddAudioChunk(audio)
 				t.onAudio(audio)
 			}),
-			texttospeech.WithSpeechMarkCallback(pipeline.audioBuffer.Mark),
-			texttospeech.WithEncodingInfo(pipeline.audioOutput.EncodingInfo()),
+			texttospeech.WithSpeechMarkCallback(speechPlayer.AddAudioMark),
+			texttospeech.WithEncodingInfo(encodingInfo),
 		}
 
 		if t.base != nil {
 			if client, ok := t.base.(TextToSpeechV1); ok {
 				ttsOptions = append(ttsOptions, texttospeech.WithSpeechEndedCallbackV0(func(texttospeech.SpeechEndedReport) {
-					pipeline.audioBuffer.AllAudioLoaded()
+					speechPlayer.AllAudioLoaded()
 				}))
 
 				speechGenerator, err := client.NewSpeechGeneratorV0(ctx, ttsOptions...)
@@ -155,7 +156,7 @@ func (t *textToSpeech) init(ctx context.Context, pipeline *responsePipeline) err
 				t.ttsClient = client
 				t.clientMu.Unlock()
 				t.connected.Store(true)
-				pipeline.audioBuffer.usingWithLegacyTTS = true
+				speechPlayer.EnableLegacyTTSMode()
 			}
 		}
 	})

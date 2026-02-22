@@ -412,7 +412,7 @@ func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
 		ctx,
 		events.NewUserPromptEvent(prompt),
 		o.conversation.History(),
-		newTextBuffer(),
+		nil,
 		func() bool { return o.currentResponsePipeline().IsCancelled() },
 	)
 	return err
