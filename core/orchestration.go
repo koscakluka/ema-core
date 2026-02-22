@@ -152,33 +152,10 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 	o.speechPlayer.SetSpokenTextCallback(orchestrateOptions.onSpokenText)
 	o.speechPlayer.SetSpokenTextDeltaCallback(orchestrateOptions.onSpokenTextDelta)
 	o.eventPlayer.SetOnCancel(orchestrateOptions.onCancellation)
-	o.speechToText.SetCallbacks(speechToTextCallbacks{
-		onSpeechStateChanged: func(isSpeaking bool) {
-			if orchestrateOptions.onSpeakingStateChanged != nil {
-				orchestrateOptions.onSpeakingStateChanged(isSpeaking)
-			}
-
-			if isSpeaking {
-				go o.respondToEvent(events.NewSpeechStartedEvent())
-			} else {
-				go o.respondToEvent(events.NewSpeechEndedEvent())
-			}
-		},
-		onInterimTranscription: func(transcript string) {
-			if orchestrateOptions.onInterimTranscription != nil {
-				orchestrateOptions.onInterimTranscription(transcript)
-			}
-
-			go o.respondToEvent(events.NewInterimTranscriptionEvent(transcript))
-		},
-		onTranscription: func(transcript string) {
-			if orchestrateOptions.onTranscription != nil {
-				orchestrateOptions.onTranscription(transcript)
-			}
-
-			go o.respondToEvent(events.NewTranscriptionEvent(transcript))
-		},
-	})
+	o.speechToText.SetSpeechStateChangedCallback(orchestrateOptions.onSpeakingStateChanged)
+	o.speechToText.SetInterimTranscriptionCallback(orchestrateOptions.onInterimTranscription)
+	o.speechToText.SetTranscriptionCallback(orchestrateOptions.onTranscription)
+	o.speechToText.SetInvokeEvent(o.respondToEvent)
 
 	if started := o.eventPlayer.StartLoop(o.baseContext, func(ctx context.Context, event llms.EventV0) error {
 		pipeline := newResponsePipeline(o.llm.snapshot(), o.textToSpeech.Snapshot(), o.speechPlayer.Snapshot(), o.audioOutput.Snapshot(),
@@ -222,7 +199,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 		}()
 	}
 
-	if err := o.speechToText.start(o.baseContext, utils.Ptr(o.audioInput.EncodingInfo())); err != nil {
+	if err := o.speechToText.Start(o.baseContext, utils.Ptr(o.audioInput.EncodingInfo())); err != nil {
 		recordedErr := fmt.Errorf("failed to initialize speech-to-text: %w", err)
 		span := trace.SpanFromContext(o.baseContext)
 		span.RecordError(recordedErr)

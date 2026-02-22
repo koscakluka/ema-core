@@ -19,6 +19,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   marks with best-effort in-flight progress
 - pausing and resuming speech now keeps playback progress and spoken-text
   updates better aligned with what was heard
+- speech-to-text callback and event dispatch wiring now lives in the STT runtime
+  with dedicated setters for speaking, interim/final transcription, and event
+  invocation
 
 ## [v0.0.17] - 2026-02-21
 

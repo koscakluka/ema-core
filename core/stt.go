@@ -5,14 +5,10 @@ import (
 	"fmt"
 
 	"github.com/koscakluka/ema-core/core/audio"
+	"github.com/koscakluka/ema-core/core/events"
+	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/speechtotext"
 )
-
-type speechToTextCallbacks struct {
-	onSpeechStateChanged   func(bool)
-	onInterimTranscription func(string)
-	onTranscription        func(string)
-}
 
 type speechToText struct {
 	// client stores the configured speech-to-text implementation.
@@ -22,6 +18,7 @@ type speechToText struct {
 	onSpeechEnded          func()
 	onInterimTranscription func(string)
 	onTranscription        func(string)
+	invokeEvent            func(llms.EventV0)
 }
 
 func newSpeechToText(client SpeechToText) *speechToText {
@@ -31,55 +28,26 @@ func newSpeechToText(client SpeechToText) *speechToText {
 		onSpeechEnded:          func() {},
 		onInterimTranscription: func(string) {},
 		onTranscription:        func(string) {},
+		invokeEvent:            func(llms.EventV0) {},
 	}
 }
 
 func (s *speechToText) set(client SpeechToText) {
-	if s == nil {
-		return
-	}
-	s.client = client
-}
-
-func (s *speechToText) isConfigured() bool {
-	return s != nil && s.client != nil
-}
-
-func (s *speechToText) SetCallbacks(callbacks speechToTextCallbacks) {
-	if s == nil {
-		return
-	}
-
-	if callbacks.onSpeechStateChanged != nil {
-		s.onSpeechStarted = func() {
-			callbacks.onSpeechStateChanged(true)
-		}
-		s.onSpeechEnded = func() {
-			callbacks.onSpeechStateChanged(false)
-		}
-	}
-	if callbacks.onInterimTranscription != nil {
-		s.onInterimTranscription = callbacks.onInterimTranscription
-	}
-	if callbacks.onTranscription != nil {
-		s.onTranscription = callbacks.onTranscription
+	if s != nil {
+		s.client = client
 	}
 }
 
-func (s *speechToText) start(ctx context.Context, encodingInfo *audio.EncodingInfo) error {
+func (s *speechToText) Start(ctx context.Context, encodingInfo *audio.EncodingInfo) error {
 	if !s.isConfigured() {
 		return nil
 	}
 
-	// TODO: These need to be swipe-outable so they should probably be set instead of passed in start
 	sttOptions := []speechtotext.TranscriptionOption{
-		speechtotext.WithSpeechStartedCallback(s.onSpeechStarted),
-		speechtotext.WithSpeechEndedCallback(s.onSpeechEnded),
-		speechtotext.WithInterimTranscriptionCallback(s.onInterimTranscription),
-		speechtotext.WithTranscriptionCallback(func(transcript string) {
-			s.onInterimTranscription("")
-			s.onTranscription(transcript)
-		}),
+		speechtotext.WithSpeechStartedCallback(s.invokeSpeechStarted),
+		speechtotext.WithSpeechEndedCallback(s.invokeSpeechEnded),
+		speechtotext.WithInterimTranscriptionCallback(s.invokeInterimTranscription),
+		speechtotext.WithTranscriptionCallback(s.invokeTranscription),
 		speechtotext.WithEncodingInfo(*encodingInfo),
 	}
 
@@ -127,4 +95,71 @@ func (s *speechToText) Close(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *speechToText) SetSpeechStateChangedCallback(callback func(bool)) {
+	if s != nil {
+		if callback != nil {
+			s.onSpeechStarted = func() { callback(true) }
+			s.onSpeechEnded = func() { callback(false) }
+		} else {
+			s.onSpeechStarted = func() {}
+			s.onSpeechEnded = func() {}
+		}
+	}
+}
+
+func (s *speechToText) SetInterimTranscriptionCallback(callback func(string)) {
+	if s != nil {
+		if callback != nil {
+			s.onInterimTranscription = callback
+		} else {
+			s.onInterimTranscription = func(string) {}
+		}
+	}
+}
+
+func (s *speechToText) SetTranscriptionCallback(callback func(string)) {
+	if s != nil {
+		if callback != nil {
+			s.onTranscription = callback
+		} else {
+			s.onTranscription = func(string) {}
+		}
+	}
+}
+
+func (s *speechToText) SetInvokeEvent(invokeEvent func(llms.EventV0)) {
+	if s != nil {
+		if invokeEvent != nil {
+			s.invokeEvent = invokeEvent
+		} else {
+			s.invokeEvent = func(llms.EventV0) {}
+		}
+	}
+}
+
+func (s *speechToText) isConfigured() bool {
+	return s != nil && s.client != nil
+}
+
+func (s *speechToText) invokeSpeechStarted() {
+	s.onSpeechStarted()
+	go s.invokeEvent(events.NewSpeechStartedEvent())
+}
+
+func (s *speechToText) invokeSpeechEnded() {
+	s.onSpeechEnded()
+	go s.invokeEvent(events.NewSpeechEndedEvent())
+}
+
+func (s *speechToText) invokeInterimTranscription(transcript string) {
+	s.onInterimTranscription(transcript)
+	go s.invokeEvent(events.NewInterimTranscriptionEvent(transcript))
+}
+
+func (s *speechToText) invokeTranscription(transcript string) {
+	s.onInterimTranscription("")
+	s.onTranscription(transcript)
+	go s.invokeEvent(events.NewTranscriptionEvent(transcript))
 }
