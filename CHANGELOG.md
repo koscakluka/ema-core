@@ -10,17 +10,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `core/audioBuffer.ApproximatePlayhead` to estimate live playback position from
-  confirmed external marks and elapsed audio time
 - `core/WithSpokenTextCallback` and `core/WithSpokenTextDeltaCallback` for
   subscribing to playback-aligned spoken-text updates during `Orchestrate`
 
 ### Changed
 
-- audio buffer rewind now uses the same approximate playhead function so pause
-  behavior stays aligned with external playhead timing
-- speech playback now tracks text by mark segments and emits best-effort
-  in-flight spoken-text approximation between confirmed marks
+- spoken-text callbacks now continue updating during playback between confirmed
+  marks with best-effort in-flight progress
+- pausing and resuming speech now keeps playback progress and spoken-text
+  updates better aligned with what was heard
 
 ## [v0.0.17] - 2026-02-21
 
