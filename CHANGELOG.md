@@ -12,6 +12,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `core/WithSpokenTextCallback` and `core/WithSpokenTextDeltaCallback` for
   subscribing to playback-aligned spoken-text updates during `Orchestrate`
+- `core/WithPartialInterimTranscriptionCallback` and
+  `core/WithPartialTranscriptionCallback` for subscribing to partial STT updates
+  during `Orchestrate`
 
 ### Changed
 

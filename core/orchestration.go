@@ -153,7 +153,9 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 	o.speechPlayer.SetSpokenTextDeltaCallback(orchestrateOptions.onSpokenTextDelta)
 	o.eventPlayer.SetOnCancel(orchestrateOptions.onCancellation)
 	o.speechToText.SetSpeechStateChangedCallback(orchestrateOptions.onSpeakingStateChanged)
+	o.speechToText.SetPartialInterimTranscriptionCallback(orchestrateOptions.onPartialInterimTranscription)
 	o.speechToText.SetInterimTranscriptionCallback(orchestrateOptions.onInterimTranscription)
+	o.speechToText.SetPartialTranscriptionCallback(orchestrateOptions.onPartialTranscription)
 	o.speechToText.SetTranscriptionCallback(orchestrateOptions.onTranscription)
 	o.speechToText.SetInvokeEvent(o.respondToEvent)
 

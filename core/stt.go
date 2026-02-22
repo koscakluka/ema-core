@@ -14,21 +14,25 @@ type speechToText struct {
 	// client stores the configured speech-to-text implementation.
 	client SpeechToText
 
-	onSpeechStarted        func()
-	onSpeechEnded          func()
-	onInterimTranscription func(string)
-	onTranscription        func(string)
-	invokeEvent            func(llms.EventV0)
+	onSpeechStarted               func()
+	onSpeechEnded                 func()
+	onPartialInterimTranscription func(string)
+	onInterimTranscription        func(string)
+	onPartialTranscription        func(string)
+	onTranscription               func(string)
+	invokeEvent                   func(llms.EventV0)
 }
 
 func newSpeechToText(client SpeechToText) *speechToText {
 	return &speechToText{
-		client:                 client,
-		onSpeechStarted:        func() {},
-		onSpeechEnded:          func() {},
-		onInterimTranscription: func(string) {},
-		onTranscription:        func(string) {},
-		invokeEvent:            func(llms.EventV0) {},
+		client:                        client,
+		onSpeechStarted:               func() {},
+		onSpeechEnded:                 func() {},
+		onPartialInterimTranscription: func(string) {},
+		onInterimTranscription:        func(string) {},
+		onPartialTranscription:        func(string) {},
+		onTranscription:               func(string) {},
+		invokeEvent:                   func(llms.EventV0) {},
 	}
 }
 
@@ -46,7 +50,9 @@ func (s *speechToText) Start(ctx context.Context, encodingInfo *audio.EncodingIn
 	sttOptions := []speechtotext.TranscriptionOption{
 		speechtotext.WithSpeechStartedCallback(s.invokeSpeechStarted),
 		speechtotext.WithSpeechEndedCallback(s.invokeSpeechEnded),
+		speechtotext.WithPartialInterimTranscriptionCallback(s.invokePartialInterimTranscription),
 		speechtotext.WithInterimTranscriptionCallback(s.invokeInterimTranscription),
+		speechtotext.WithPartialTranscriptionCallback(s.invokePartialTranscription),
 		speechtotext.WithTranscriptionCallback(s.invokeTranscription),
 		speechtotext.WithEncodingInfo(*encodingInfo),
 	}
@@ -119,6 +125,26 @@ func (s *speechToText) SetInterimTranscriptionCallback(callback func(string)) {
 	}
 }
 
+func (s *speechToText) SetPartialInterimTranscriptionCallback(callback func(string)) {
+	if s != nil {
+		if callback != nil {
+			s.onPartialInterimTranscription = callback
+		} else {
+			s.onPartialInterimTranscription = func(string) {}
+		}
+	}
+}
+
+func (s *speechToText) SetPartialTranscriptionCallback(callback func(string)) {
+	if s != nil {
+		if callback != nil {
+			s.onPartialTranscription = callback
+		} else {
+			s.onPartialTranscription = func(string) {}
+		}
+	}
+}
+
 func (s *speechToText) SetTranscriptionCallback(callback func(string)) {
 	if s != nil {
 		if callback != nil {
@@ -158,7 +184,16 @@ func (s *speechToText) invokeInterimTranscription(transcript string) {
 	go s.invokeEvent(events.NewInterimTranscriptionEvent(transcript))
 }
 
+func (s *speechToText) invokePartialInterimTranscription(transcript string) {
+	s.onPartialInterimTranscription(transcript)
+}
+
+func (s *speechToText) invokePartialTranscription(transcript string) {
+	s.onPartialTranscription(transcript)
+}
+
 func (s *speechToText) invokeTranscription(transcript string) {
+	s.onPartialInterimTranscription("")
 	s.onInterimTranscription("")
 	s.onTranscription(transcript)
 	go s.invokeEvent(events.NewTranscriptionEvent(transcript))

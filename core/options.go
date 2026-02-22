@@ -122,17 +122,19 @@ func WithEventHandlerV0(handler EventHandlerV0) OrchestratorOption {
 }
 
 type OrchestrateOptions struct {
-	onTranscription        func(transcript string)
-	onInterimTranscription func(transcript string)
-	onSpeakingStateChanged func(isSpeaking bool)
-	onResponse             func(response string)
-	onResponseEnd          func()
-	onCancellation         func()
-	onInputAudio           func(audio []byte)
-	onAudio                func(audio []byte)
-	onAudioEnded           func(transcript string)
-	onSpokenText           func(spokenText string)
-	onSpokenTextDelta      func(spokenTextDelta string)
+	onTranscription               func(transcript string)
+	onPartialTranscription        func(transcript string)
+	onInterimTranscription        func(transcript string)
+	onPartialInterimTranscription func(transcript string)
+	onSpeakingStateChanged        func(isSpeaking bool)
+	onResponse                    func(response string)
+	onResponseEnd                 func()
+	onCancellation                func()
+	onInputAudio                  func(audio []byte)
+	onAudio                       func(audio []byte)
+	onAudioEnded                  func(transcript string)
+	onSpokenText                  func(spokenText string)
+	onSpokenTextDelta             func(spokenTextDelta string)
 }
 
 type OrchestrateOption func(*OrchestrateOptions)
@@ -148,6 +150,17 @@ func WithTranscriptionCallback(callback func(transcript string)) OrchestrateOpti
 	}
 }
 
+// WithPartialTranscriptionCallback registers a callback for finalized
+// transcription segments produced by the configured speech-to-text client.
+//
+// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// callback.
+func WithPartialTranscriptionCallback(callback func(transcript string)) OrchestrateOption {
+	return func(o *OrchestrateOptions) {
+		o.onPartialTranscription = callback
+	}
+}
+
 // WithInterimTranscriptionCallback registers a callback for interim
 // transcriptions produced by the configured speech-to-text client.
 //
@@ -156,6 +169,17 @@ func WithTranscriptionCallback(callback func(transcript string)) OrchestrateOpti
 func WithInterimTranscriptionCallback(callback func(transcript string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
 		o.onInterimTranscription = callback
+	}
+}
+
+// WithPartialInterimTranscriptionCallback registers a callback for partial
+// interim transcriptions produced by the configured speech-to-text client.
+//
+// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// callback.
+func WithPartialInterimTranscriptionCallback(callback func(transcript string)) OrchestrateOption {
+	return func(o *OrchestrateOptions) {
+		o.onPartialInterimTranscription = callback
 	}
 }
 

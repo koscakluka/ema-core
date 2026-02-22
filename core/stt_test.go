@@ -21,15 +21,23 @@ func TestSpeechToTextStartForwardsCallbacksAndInvokesEvents(t *testing.T) {
 			if opts.SpeechEndedCallback == nil {
 				t.Fatalf("expected speech-end callback to be configured")
 			}
+			if opts.PartialInterimTranscriptionCallback == nil {
+				t.Fatalf("expected partial interim callback to be configured")
+			}
 			if opts.InterimTranscriptionCallback == nil {
 				t.Fatalf("expected interim callback to be configured")
+			}
+			if opts.PartialTranscriptionCallback == nil {
+				t.Fatalf("expected partial transcription callback to be configured")
 			}
 			if opts.TranscriptionCallback == nil {
 				t.Fatalf("expected transcription callback to be configured")
 			}
 
 			opts.SpeechStartedCallback()
+			opts.PartialInterimTranscriptionCallback("hel")
 			opts.InterimTranscriptionCallback("hel")
+			opts.PartialTranscriptionCallback("hello")
 			opts.TranscriptionCallback("hello")
 			opts.SpeechEndedCallback()
 		},
@@ -39,7 +47,9 @@ func TestSpeechToTextStartForwardsCallbacksAndInvokesEvents(t *testing.T) {
 
 	var mu sync.Mutex
 	states := []bool{}
+	partialInterim := []string{}
 	interim := []string{}
+	partialTranscriptions := []string{}
 	transcriptions := []string{}
 	invokedEvents := atomic.Int32{}
 	invokedEventNames := []string{}
@@ -52,6 +62,16 @@ func TestSpeechToTextStartForwardsCallbacksAndInvokesEvents(t *testing.T) {
 	runtime.SetInterimTranscriptionCallback(func(transcript string) {
 		mu.Lock()
 		interim = append(interim, transcript)
+		mu.Unlock()
+	})
+	runtime.SetPartialInterimTranscriptionCallback(func(transcript string) {
+		mu.Lock()
+		partialInterim = append(partialInterim, transcript)
+		mu.Unlock()
+	})
+	runtime.SetPartialTranscriptionCallback(func(transcript string) {
+		mu.Lock()
+		partialTranscriptions = append(partialTranscriptions, transcript)
 		mu.Unlock()
 	})
 	runtime.SetTranscriptionCallback(func(transcript string) {
@@ -89,6 +109,14 @@ func TestSpeechToTextStartForwardsCallbacksAndInvokesEvents(t *testing.T) {
 		t.Fatalf("expected interim callbacks [\"hel\" \"\"], got %v", interim)
 	}
 
+	if len(partialInterim) != 2 || partialInterim[0] != "hel" || partialInterim[1] != "" {
+		t.Fatalf("expected partial interim callbacks [\"hel\" \"\"], got %v", partialInterim)
+	}
+
+	if len(partialTranscriptions) != 1 || partialTranscriptions[0] != "hello" {
+		t.Fatalf("expected partial transcription callback [\"hello\"], got %v", partialTranscriptions)
+	}
+
 	if len(transcriptions) != 1 || transcriptions[0] != "hello" {
 		t.Fatalf("expected transcription callback [\"hello\"], got %v", transcriptions)
 	}
@@ -104,17 +132,23 @@ func TestSpeechToTextIndividualSettersAcceptNilAndClearCallbacks(t *testing.T) {
 
 	runtime.SetSpeechStateChangedCallback(func(bool) { invocations.Add(1) })
 	runtime.SetInterimTranscriptionCallback(func(string) { invocations.Add(1) })
+	runtime.SetPartialInterimTranscriptionCallback(func(string) { invocations.Add(1) })
+	runtime.SetPartialTranscriptionCallback(func(string) { invocations.Add(1) })
 	runtime.SetTranscriptionCallback(func(string) { invocations.Add(1) })
 	runtime.SetInvokeEvent(func(llms.EventV0) { invocations.Add(1) })
 
 	runtime.SetSpeechStateChangedCallback(nil)
 	runtime.SetInterimTranscriptionCallback(nil)
+	runtime.SetPartialInterimTranscriptionCallback(nil)
+	runtime.SetPartialTranscriptionCallback(nil)
 	runtime.SetTranscriptionCallback(nil)
 	runtime.SetInvokeEvent(nil)
 
 	runtime.invokeSpeechStarted()
 	runtime.invokeSpeechEnded()
+	runtime.invokePartialInterimTranscription("partial")
 	runtime.invokeInterimTranscription("partial")
+	runtime.invokePartialTranscription("partial final")
 	runtime.invokeTranscription("final")
 
 	if got := invocations.Load(); got != 0 {
