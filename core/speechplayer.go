@@ -176,12 +176,17 @@ func (p *speechPlayer) Audio(yield func(audioOrMark) bool) {
 
 func (p *speechPlayer) OnAudioOutputMarkPlayed(id string) *string {
 	var transcript *string
+	confirmed := false
 	p.lockFor(func() {
 		if p.audioBuffer != nil {
 			transcript = p.audioBuffer.GetMarkText(id)
-			p.audioBuffer.ConfirmMark(id)
+			confirmed = p.audioBuffer.ConfirmMark(id)
 		}
 	})
+	if !confirmed {
+		return nil
+	}
+
 	p.ConfirmMark()
 	p.EmitApproximateSpokenText(p.ApproximateCurrentSegmentProgress())
 	return transcript

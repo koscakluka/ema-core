@@ -353,6 +353,57 @@ func TestSpeechPlayerOnAudioOutputMarkPlayedCombinesConfirmationAndEmission(t *t
 	}
 }
 
+func TestSpeechPlayerOnAudioOutputMarkPlayedIgnoresUnknownOrDuplicateMarks(t *testing.T) {
+	player := newSpeechPlayer()
+	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
+
+	setTextSegments(player, "Hello", " world")
+
+	updates := []string{}
+	player.SetSpokenTextCallback(func(spokenText string) {
+		updates = append(updates, spokenText)
+	})
+
+	player.AddAudioChunk([]byte{1, 2, 3})
+	player.AddAudioMark("Hello")
+
+	markID := ""
+	for audioOrMark := range player.Audio {
+		if audioOrMark.Type == "mark" {
+			markID = audioOrMark.Mark
+			break
+		}
+	}
+
+	if markID == "" {
+		t.Fatalf("expected owned audio buffer to emit a mark")
+	}
+
+	if transcript := player.OnAudioOutputMarkPlayed("unknown-mark"); transcript != nil {
+		t.Fatalf("expected unknown mark to return nil transcript, got %q", *transcript)
+	}
+	if got := player.SpokenTextSoFar(); got != "" {
+		t.Fatalf("expected unknown mark to not advance spoken text, got %q", got)
+	}
+
+	first := player.OnAudioOutputMarkPlayed(markID)
+	if first == nil || *first != "Hello" {
+		t.Fatalf("expected first confirmation transcript %q, got %v", "Hello", first)
+	}
+
+	second := player.OnAudioOutputMarkPlayed(markID)
+	if second != nil {
+		t.Fatalf("expected duplicate mark callback to return nil transcript, got %q", *second)
+	}
+
+	if got := player.SpokenTextSoFar(); got != "Hello" {
+		t.Fatalf("expected duplicate mark to not advance spoken text beyond %q, got %q", "Hello", got)
+	}
+	if len(updates) != 1 || updates[0] != "Hello" {
+		t.Fatalf("expected exactly one spoken-text emission %q, got %v", "Hello", updates)
+	}
+}
+
 func TestSpeechPlayerTextOrMarksEmitsBoundaryMarkWhenConfigured(t *testing.T) {
 	player := newSpeechPlayer()
 	player.InitBuffers(audio.GetDefaultEncodingInfo(), "?.!")

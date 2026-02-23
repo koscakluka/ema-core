@@ -212,9 +212,10 @@ func (b *audioBuffer) GetMarkText(id string) *string {
 	return nil
 }
 
-func (b *audioBuffer) ConfirmMark(id string) {
+func (b *audioBuffer) ConfirmMark(id string) bool {
 	b.mu.Lock()
 	shouldSignal := false
+	confirmed := false
 	for i, mark := range b.marks {
 		if mark.confirmed {
 			continue
@@ -225,6 +226,7 @@ func (b *audioBuffer) ConfirmMark(id string) {
 			// "duration", audioDuration(b.audio[b.audioPlayed:mark.position], b.sampleRate),
 			// "actual_duration", time.Since(b.audioPlayingStarted),
 			b.marks[i].confirmed = true
+			confirmed = true
 			b.externalPlayhead = mark.position
 			b.startedPlayingLocked()
 			if (b.allAudioLoaded ||
@@ -243,6 +245,8 @@ func (b *audioBuffer) ConfirmMark(id string) {
 	if shouldSignal {
 		b.signalUpdate()
 	}
+
+	return confirmed
 }
 
 func (b *audioBuffer) StartedPlaying() {
