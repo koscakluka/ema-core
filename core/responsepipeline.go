@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/koscakluka/ema-core/core/llms"
 	"go.opentelemetry.io/otel/attribute"
@@ -193,16 +192,8 @@ func (processor *responsePipeline) processSpeech(
 	ctx context.Context,
 	turn *activeTurn,
 ) error {
-	done := make(chan struct{})
+	done := withContextCancelHook(ctx, processor.speechPlayer.StopAudio)
 	defer close(done)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			processor.speechPlayer.StopAudio()
-		case <-done:
-		}
-	}()
 
 	if ok := processor.textToSpeech.waitUntilInitialized(ctx); !ok {
 		return nil
@@ -214,51 +205,18 @@ func (processor *responsePipeline) processSpeech(
 	_, span := tracer.Start(ctx, "passing speech to audio output")
 	defer span.End()
 
-	const minSpokenTextUpdateInterval = 10 * time.Millisecond
-	const maxSpokenTextUpdateInterval = 250 * time.Millisecond
-
-	clampSpokenTextUpdateInterval := func(interval time.Duration) time.Duration {
-		if interval < minSpokenTextUpdateInterval {
-			return minSpokenTextUpdateInterval
-		}
-		if interval > maxSpokenTextUpdateInterval {
-			return maxSpokenTextUpdateInterval
-		}
-		return interval
-	}
-
-	go func() {
-		nextUpdate := processor.speechPlayer.EmitApproximateSpokenTextFromAudioProgressAndNextUpdate()
-
-		timer := time.NewTimer(clampSpokenTextUpdateInterval(nextUpdate))
-		defer timer.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-done:
-				return
-			case <-timer.C:
-				nextUpdate = processor.speechPlayer.EmitApproximateSpokenTextFromAudioProgressAndNextUpdate()
-				timer.Reset(clampSpokenTextUpdateInterval(nextUpdate))
-			}
-		}
-	}()
-
 bufferReadingLoop:
 	for audioOrMark := range processor.speechPlayer.Audio {
 		switch audioOrMark.Type {
-		case "audio":
-			audio := audioOrMark.Audio
-
+		case audioOrMarkTypeAudio:
 			if processor.textToSpeech.IsMuted() || processor.IsCancelled() {
 				processor.audioOutput.Clear()
 				break bufferReadingLoop
 			}
 
-			processor.audioOutput.SendAudio(audio)
+			processor.audioOutput.SendAudio(audioOrMark.Audio)
 
-		case "mark":
+		case audioOrMarkTypeMark:
 			mark := audioOrMark.Mark
 			span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
 			processor.audioOutput.Mark(mark, func(mark string) {
@@ -270,7 +228,6 @@ bufferReadingLoop:
 		}
 	}
 
-	processor.speechPlayer.OnAudioEnded(processor.speechPlayer.FullText())
 	processor.audioOutput.SendAudio([]byte{})
 	processor.audioOutput.Clear()
 

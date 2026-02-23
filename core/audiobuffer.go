@@ -456,6 +456,11 @@ type audioOrMark struct {
 	Mark  string
 }
 
+const (
+	audioOrMarkTypeAudio = "audio"
+	audioOrMarkTypeMark  = "mark"
+)
+
 func audioLen(audio [][]byte) int {
 	chunksTotalLength := 0
 	for _, audioChunk := range audio {

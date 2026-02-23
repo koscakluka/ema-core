@@ -8,6 +8,9 @@ import (
 	"github.com/koscakluka/ema-core/core/audio"
 )
 
+const minSpokenTextUpdateInterval = 10 * time.Millisecond
+const maxSpokenTextUpdateInterval = 250 * time.Millisecond
+
 type speechPlayer struct {
 	mu sync.RWMutex
 
@@ -87,6 +90,15 @@ func (p *speechPlayer) TextOrMarks(yield func(textOrMark) bool) {
 			p.lockFor(func() { p.text = append(p.text, "") })
 			return yield(textOrMark{Type: textOrMarkTypeMark})
 		})
+		if segmentationBoundaries == "" {
+			return
+		}
+
+		// mark
+		p.lockFor(func() { p.text = append(p.text, "") })
+		if !yield(textOrMark{Type: textOrMarkTypeMark}) {
+			return
+		}
 	}
 }
 
@@ -153,8 +165,13 @@ func (p *speechPlayer) Audio(yield func(audioOrMark) bool) {
 	p.rLockFor(func() { audioBuffer = p.audioBuffer })
 
 	if audioBuffer != nil {
+		emitterDone := make(chan struct{})
+		go p.startApproximateSpokenTextEmitter(emitterDone)
 		audioBuffer.Audio(yield)
+		close(emitterDone)
 	}
+
+	p.OnAudioEnded(p.FullText())
 }
 
 func (p *speechPlayer) OnAudioOutputMarkPlayed(id string) *string {
@@ -231,6 +248,27 @@ func (p *speechPlayer) EmitApproximateSpokenTextFromAudioProgressAndNextUpdate()
 	progress, nextUpdate := p.ApproximateCurrentSegmentProgressAndNextUpdate()
 	p.EmitApproximateSpokenText(progress)
 	return nextUpdate
+}
+
+func (p *speechPlayer) startApproximateSpokenTextEmitter(done <-chan struct{}) {
+	if p != nil {
+		progress, nextUpdate := p.ApproximateCurrentSegmentProgressAndNextUpdate()
+		if p.ApproximateSpokenTextSoFar(progress) != "" {
+			p.EmitApproximateSpokenText(progress)
+		}
+
+		timer := time.NewTimer(clampSpokenTextUpdateInterval(nextUpdate))
+		defer timer.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-timer.C:
+				nextUpdate = p.EmitApproximateSpokenTextFromAudioProgressAndNextUpdate()
+				timer.Reset(clampSpokenTextUpdateInterval(nextUpdate))
+			}
+		}
+	}
 }
 
 func (p *speechPlayer) Snapshot() *speechPlayer {
@@ -409,6 +447,16 @@ func (p *speechPlayer) rLockFor(f func()) {
 		defer p.mu.RUnlock()
 		f()
 	}
+}
+
+func clampSpokenTextUpdateInterval(interval time.Duration) time.Duration {
+	if interval < minSpokenTextUpdateInterval {
+		return minSpokenTextUpdateInterval
+	}
+	if interval > maxSpokenTextUpdateInterval {
+		return maxSpokenTextUpdateInterval
+	}
+	return interval
 }
 
 type textOrMark struct {

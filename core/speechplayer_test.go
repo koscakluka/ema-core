@@ -365,8 +365,8 @@ func TestSpeechPlayerTextOrMarksEmitsBoundaryMarkWhenConfigured(t *testing.T) {
 		items = append(items, item)
 	}
 
-	if len(items) != 2 {
-		t.Fatalf("expected one text and one mark event, got %d items", len(items))
+	if len(items) != 3 {
+		t.Fatalf("expected one text and two mark events (boundary + trailing), got %d items", len(items))
 	}
 	if items[0].Type != textOrMarkTypeText || items[0].Text != "Hello." {
 		t.Fatalf("expected first event to be text %q, got %#v", "Hello.", items[0])
@@ -374,8 +374,11 @@ func TestSpeechPlayerTextOrMarksEmitsBoundaryMarkWhenConfigured(t *testing.T) {
 	if items[1].Type != textOrMarkTypeMark {
 		t.Fatalf("expected second event to be mark, got %#v", items[1])
 	}
-	if len(player.text) != 2 {
-		t.Fatalf("expected boundary segmentation to create next segment, got %d", len(player.text))
+	if items[2].Type != textOrMarkTypeMark {
+		t.Fatalf("expected third event to be trailing mark, got %#v", items[2])
+	}
+	if len(player.text) != 3 {
+		t.Fatalf("expected boundary and trailing segmentation to create two next segments, got %d", len(player.text))
 	}
 }
 
@@ -405,7 +408,7 @@ func TestSpeechPlayerTextOrMarksDoesNotEmitMarkWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestSpeechPlayerTextOrMarksDoesNotEmitMarkWithoutBoundary(t *testing.T) {
+func TestSpeechPlayerTextOrMarksEmitsTrailingMarkWithoutBoundary(t *testing.T) {
 	player := newSpeechPlayer()
 	player.InitBuffers(audio.GetDefaultEncodingInfo(), "?.!")
 
@@ -417,13 +420,16 @@ func TestSpeechPlayerTextOrMarksDoesNotEmitMarkWithoutBoundary(t *testing.T) {
 		items = append(items, item)
 	}
 
-	if len(items) != 1 {
-		t.Fatalf("expected one text event without boundary, got %d", len(items))
+	if len(items) != 2 {
+		t.Fatalf("expected one text and one trailing mark event without boundary, got %d", len(items))
 	}
 	if items[0].Type != textOrMarkTypeText || items[0].Text != "Hello world" {
 		t.Fatalf("expected text event %q, got %#v", "Hello world", items[0])
 	}
-	if len(player.text) != 1 {
-		t.Fatalf("expected no segmentation without boundary, got %d segments", len(player.text))
+	if items[1].Type != textOrMarkTypeMark {
+		t.Fatalf("expected second event to be trailing mark, got %#v", items[1])
+	}
+	if len(player.text) != 2 {
+		t.Fatalf("expected trailing segmentation without boundary, got %d segments", len(player.text))
 	}
 }
