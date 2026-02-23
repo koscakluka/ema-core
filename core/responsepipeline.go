@@ -198,9 +198,6 @@ func (processor *responsePipeline) processSpeech(
 	if ok := processor.textToSpeech.waitUntilInitialized(ctx); !ok {
 		return nil
 	}
-	if !processor.textToSpeech.IsConnected() {
-		return nil
-	}
 
 	_, span := tracer.Start(ctx, "passing speech to audio output")
 	defer span.End()

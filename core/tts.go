@@ -165,16 +165,15 @@ func (t *textToSpeech) init(ctx context.Context, speechPlayer *speechPlayer, enc
 }
 
 func (t *textToSpeech) waitUntilInitialized(ctx context.Context) bool {
-	if t == nil || t.initialized == nil {
-		return false
+	if t != nil && t.initialized != nil {
+		select {
+		case <-t.initialized:
+			return t.connected.Load()
+		case <-ctx.Done():
+			return false
+		}
 	}
-
-	select {
-	case <-t.initialized:
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return false
 }
 
 func (t *textToSpeech) IsConnected() bool { return t != nil && t.connected.Load() }
@@ -341,19 +340,15 @@ func (t *textToSpeech) Cancel() error {
 func (t *textToSpeech) IsMuted() bool { return t != nil && t.isMuted.Load() }
 
 func (t *textToSpeech) Mute() error {
-	if t == nil {
-		return nil
+	if t != nil {
+		t.isMuted.Store(true)
 	}
-
-	t.isMuted.Store(true)
 	return nil
 }
 
 func (t *textToSpeech) Unmute() error {
-	if t == nil {
-		return nil
+	if t != nil {
+		t.isMuted.Store(false)
 	}
-
-	t.isMuted.Store(false)
 	return nil
 }
