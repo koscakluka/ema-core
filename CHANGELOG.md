@@ -8,6 +8,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v0.0.18] - 2026-02-23
+
 ### Added
 
 - `core/WithSpokenTextCallback` and `core/WithSpokenTextDeltaCallback` for
@@ -19,15 +21,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - spoken-text callbacks now continue updating during playback between confirmed
-  marks with best-effort in-flight progress
+  marks with best-effort in-flight progress estimation
 - pausing and resuming speech now keeps playback progress and spoken-text
   updates better aligned with what was heard
-- speech-to-text callback and event dispatch wiring now lives in the STT runtime
-  with dedicated setters for speaking, interim/final transcription, and event
-  invocation
 
 ### Fixed
 
+- speech output now waits for a confirmed TTS connection before playback starts
+  to avoid dropped or misordered speech
+- speech marks now include trailing spoken segments, and unknown or duplicate
+  audio marks are ignored to keep spoken-text progress stable
 - Deepgram STT callback dispatch now normalizes unset callbacks to no-op handlers
   and consistently emits configured interim/final/speech-state callbacks without
   scattered nil checks
@@ -259,7 +262,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [v0.0.12] - 2025-11-05
 
-[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.17...HEAD
+[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.18...HEAD
+[v0.0.18]: https://github.com/koscakluka/ema-core/compare/v0.0.17...v0.0.18
 [v0.0.17]: https://github.com/koscakluka/ema-core/compare/v0.0.16...v0.0.17
 [v0.0.16]: https://github.com/koscakluka/ema-core/compare/v0.0.15...v0.0.16
 [v0.0.15]: https://github.com/koscakluka/ema-core/compare/v0.0.14...v0.0.15
