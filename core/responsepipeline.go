@@ -32,10 +32,14 @@ type responsePipeline struct {
 }
 
 func newResponsePipeline(llm llm, textToSpeech *textToSpeech, speechPlayer *speechPlayer, audioOutput *audioOutput, onCancel func()) *responsePipeline {
+	speechPlayerSegmentationBoundaries := ""
 	if audioOutput.supportsCallbackMarks {
-		speechPlayer.InitBuffers(audioOutput.EncodingInfo(), defaultSpeechPlayerSegmentationBoundaries)
-	} else {
-		speechPlayer.InitBuffers(audioOutput.EncodingInfo(), "")
+		speechPlayerSegmentationBoundaries = defaultSpeechPlayerSegmentationBoundaries
+	}
+	speechPlayer.InitBuffers(audioOutput.EncodingInfo(), speechPlayerSegmentationBoundaries)
+
+	if onCancel == nil {
+		onCancel = func() {}
 	}
 
 	return &responsePipeline{
@@ -54,85 +58,63 @@ func (p *responsePipeline) Run(
 	history []llms.TurnV1,
 ) (llms.TurnV1, error) {
 	if p == nil {
-		return llms.TurnV1{}, fmt.Errorf("turn processor and conversation are required")
+		return llms.TurnV1{}, fmt.Errorf("turn processor needs to be set")
 	}
 	if activeTurn == nil {
 		return llms.TurnV1{}, fmt.Errorf("active turn is required")
 	}
 
-	p.ctxMu.Lock()
-	p.ctx = ctx
-	p.ctxMu.Unlock()
+	p.lockFor(func() { p.ctx = ctx })
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer p.Close()
 
-	var workerErr error
-	workerErrMu := sync.Mutex{}
-	addWorkerErr := func(err error) {
-		if err == nil {
-			return
-		}
-		workerErrMu.Lock()
-		workerErr = errors.Join(workerErr, err)
-		workerErrMu.Unlock()
+	err := p.runWorkers(ctx, cancel,
+		panicSafeNamedWorker("llm generation", func(ctx context.Context) error { return p.generateLLM(ctx, activeTurn, history) }),
+		panicSafeNamedWorker("response text processing", func(ctx context.Context) error { return p.processResponseText(ctx, activeTurn) }),
+		panicSafeNamedWorker("speech processing", func(ctx context.Context) error { return p.processSpeech(ctx, activeTurn) }),
+	)
+
+	if finaliseErr := panicSafeNamedWorker("active turn finalise",
+		func(context.Context) error { activeTurn.Finalise(); return nil },
+	)(ctx); finaliseErr != nil {
+		err = errors.Join(err, finaliseErr)
 	}
 
-	run := func(name string, f func(context.Context) error) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				addWorkerErr(fmt.Errorf("%s worker panicked: %v", name, recovered))
-				cancel()
-			}
-		}()
-
-		if err := f(ctx); err != nil {
-			addWorkerErr(fmt.Errorf("%s worker failed: %w", name, err))
-			cancel()
-		}
-	}
-
-	wg := &sync.WaitGroup{}
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		run("llm generation", func(ctx context.Context) error {
-			return p.generateLLM(ctx, activeTurn, history)
-		})
-	}()
-	go func() {
-		defer wg.Done()
-		run("response text processing", func(ctx context.Context) error {
-			return p.processResponseText(ctx, activeTurn)
-		})
-	}()
-	go func() {
-		defer wg.Done()
-		run("speech processing", func(ctx context.Context) error {
-			return p.processSpeech(ctx, activeTurn)
-		})
-	}()
-
-	wg.Wait()
-
-	finaliseErr := func() (err error) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				err = fmt.Errorf("active turn finalise panicked: %v", recovered)
-			}
-		}()
-
-		activeTurn.Finalise()
-		p.Close()
-		return nil
-	}()
-	addWorkerErr(finaliseErr)
-
-	if workerErr != nil {
-		return activeTurn.TurnV1, fmt.Errorf("one or more active turn processes failed: %w", workerErr)
+	if err != nil {
+		return activeTurn.TurnV1, fmt.Errorf("one or more active turn processes failed: %w", err)
 	}
 
 	return activeTurn.TurnV1, nil
+}
+
+func (p *responsePipeline) runWorkers(ctx context.Context, cancel context.CancelFunc, workers ...workerRun) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(workers))
+
+	wg.Add(len(workers))
+	for _, run := range workers {
+		run := run
+		go func() {
+			defer wg.Done()
+			err := run(ctx)
+			if err != nil {
+				cancel()
+			}
+			errCh <- err
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	var workerErr error
+	for err := range errCh {
+		workerErr = errors.Join(workerErr, err)
+	}
+
+	return workerErr
 }
 
 func (processor *responsePipeline) generateLLM(ctx context.Context, turn *activeTurn, history []llms.TurnV1) error {
@@ -167,15 +149,8 @@ func (processor *responsePipeline) processResponseText(
 	ctx context.Context,
 	turn *activeTurn,
 ) error {
-	done := make(chan struct{})
+	done := withContextCancelHook(ctx, processor.speechPlayer.ClearText)
 	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			processor.speechPlayer.ClearText()
-		case <-done:
-		}
-	}()
 
 	_, span := tracer.Start(ctx, "passing text to tts")
 	defer span.End()
@@ -303,75 +278,70 @@ bufferReadingLoop:
 }
 
 func (p *responsePipeline) Pause() {
-	if p == nil {
-		return
+	if p != nil {
+		p.speechPlayer.PauseAudio()
+		p.audioOutput.Clear()
 	}
-
-	p.speechPlayer.PauseAudio()
-	p.audioOutput.Clear()
 }
 
 func (p *responsePipeline) Unpause() {
-	if p == nil {
-		return
+	if p != nil {
+		p.speechPlayer.ResumeAudio()
 	}
-
-	p.speechPlayer.ResumeAudio()
 }
 
 func (p *responsePipeline) StopSpeaking() {
-	if p == nil {
-		return
+	if p != nil {
+		p.textToSpeech.Mute()
+		p.speechPlayer.StopAudioAndUnblock()
+		p.audioOutput.Clear()
 	}
-
-	p.textToSpeech.Mute()
-	p.speechPlayer.StopAudioAndUnblock()
-	p.audioOutput.Clear()
 }
 
 func (p *responsePipeline) Cancel() {
-	if p == nil || !p.cancelled.CompareAndSwap(false, true) {
-		return
-	}
-
-	p.Close()
-	p.textToSpeech.Cancel()
-	p.speechPlayer.StopAudio()
-	p.audioOutput.Clear()
-	if p.onCancel != nil {
+	if p != nil && p.cancelled.CompareAndSwap(false, true) {
+		p.Close()
+		p.textToSpeech.Cancel()
+		p.speechPlayer.StopAudio()
+		p.audioOutput.Clear()
 		p.onCancel()
 	}
 }
 
 func (p *responsePipeline) IsCancelled() bool {
-	if p == nil {
-		return false
-	}
-
-	return p.cancelled.Load()
+	return p != nil && p.cancelled.Load()
 }
 
 func (p *responsePipeline) Close() {
-	if p == nil {
-		return
-	}
-
-	pipelineCtx := p.Ctx()
-	if err := p.textToSpeech.Close(pipelineCtx); err != nil {
-		err = fmt.Errorf("failed to close tts resources while cancelling active turn: %w", err)
-		span := trace.SpanFromContext(pipelineCtx)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	if p != nil {
+		pipelineCtx := p.Ctx()
+		if err := p.textToSpeech.Close(pipelineCtx); err != nil {
+			err = fmt.Errorf("failed to close tts resources while cancelling active turn: %w", err)
+			span := trace.SpanFromContext(pipelineCtx)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
 	}
 }
 
 func (p *responsePipeline) Ctx() context.Context {
-	if p == nil {
-		return nil
+	var ctx context.Context
+	p.rLockFor(func() { ctx = p.ctx })
+	return ctx
+}
+
+func (p *responsePipeline) lockFor(f func()) {
+	if p != nil {
+		p.ctxMu.Lock()
+		defer p.ctxMu.Unlock()
+		f()
 	}
+}
 
-	p.ctxMu.RLock()
-	defer p.ctxMu.RUnlock()
-
-	return p.ctx
+func (p *responsePipeline) rLockFor(f func()) {
+	if p != nil {
+		p.ctxMu.RLock()
+		defer p.ctxMu.RUnlock()
+		f()
+	}
 }
