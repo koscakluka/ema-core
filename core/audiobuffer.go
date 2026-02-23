@@ -167,20 +167,6 @@ func (b *audioBuffer) waitForNextAudio(yield func(audioOrMark) bool) (ok bool) {
 	}
 }
 
-func (b *audioBuffer) audioDone() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.audioDoneLocked()
-}
-
-func (b *audioBuffer) ApproximatePlayhead() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.approximatePlayheadLocked(time.Now())
-}
-
 func (b *audioBuffer) ApproximateCurrentSegmentProgress() float64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -195,8 +181,7 @@ func (b *audioBuffer) ApproximateCurrentSegmentProgressAndNextUpdate() (float64,
 	return b.approximateCurrentSegmentProgressAndNextUpdateLocked(time.Now())
 }
 
-// audioDoneLocked is a version of [audioBuffer.audioDone] that is safe to call
-// from a locked context.
+// audioDoneLocked is safe to call from a locked context.
 func (b *audioBuffer) audioDoneLocked() bool {
 
 	return (b.allAudioLoaded || (b.usingWithLegacyTTS && b.legacyAllAudioLoaded)) &&
@@ -467,10 +452,6 @@ func audioLen(audio [][]byte) int {
 		chunksTotalLength += len(audioChunk)
 	}
 	return chunksTotalLength
-}
-
-func audioDuration(audio [][]byte, encodingInfo audio.EncodingInfo) time.Duration {
-	return time.Duration(float64(audioLen(audio)) / float64(encodingInfo.SampleRate) * float64(time.Second) / float64(encodingInfo.Format.ByteSize()))
 }
 
 func audioSamples(duration time.Duration, encodingInfo audio.EncodingInfo) int {

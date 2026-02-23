@@ -78,14 +78,6 @@ func (t *textToSpeech) SetCallbacks(onAudio func([]byte)) {
 	}
 }
 
-func (t *textToSpeech) client() textToSpeechBase {
-	if t == nil {
-		return nil
-	}
-
-	return t.base
-}
-
 func (t *textToSpeech) init(ctx context.Context, speechPlayer *speechPlayer, encodingInfo audio.EncodingInfo) error {
 	if t == nil {
 		return nil
@@ -175,8 +167,6 @@ func (t *textToSpeech) waitUntilInitialized(ctx context.Context) bool {
 	}
 	return false
 }
-
-func (t *textToSpeech) IsConnected() bool { return t != nil && t.connected.Load() }
 
 func (t *textToSpeech) Close(ctx context.Context) error {
 	if t == nil {

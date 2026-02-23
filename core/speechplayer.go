@@ -240,10 +240,6 @@ func (p *speechPlayer) StopAudioAndUnblock() {
 	})
 }
 
-func (p *speechPlayer) EmitApproximateSpokenTextFromAudioProgress() {
-	p.EmitApproximateSpokenText(p.ApproximateCurrentSegmentProgress())
-}
-
 func (p *speechPlayer) EmitApproximateSpokenTextFromAudioProgressAndNextUpdate() time.Duration {
 	progress, nextUpdate := p.ApproximateCurrentSegmentProgressAndNextUpdate()
 	p.EmitApproximateSpokenText(progress)
