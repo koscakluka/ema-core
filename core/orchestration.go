@@ -9,8 +9,8 @@ import (
 
 	"log"
 
-	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
+	"github.com/koscakluka/ema-core/core/triggers"
 	"github.com/koscakluka/ema-core/internal/utils"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -32,15 +32,15 @@ type Orchestrator struct {
 	audioOutput  audioOutput
 	speechPlayer speechPlayer
 
-	eventHandler EventHandlerV0
-	// defaultEventHandler is the internal event handler used to handle incoming
-	// events if no other handler is configured.
+	triggerHandler TriggerHandlerV0
+	// defaultTriggerHandler is the internal trigger handler used to handle incoming
+	// triggers if no other handler is configured.
 	//
-	// TODO: Remove defaultEventHandler once we remove the interruption handlers
+	// TODO: Remove defaultTriggerHandler once we remove the interruption handlers
 	// probably on minor release
-	defaultEventHandler internalEventHandler
+	defaultTriggerHandler internalTriggerHandler
 
-	eventPlayer      *eventPlayer
+	triggerPlayer    *triggerPlayer
 	responsePipeline atomic.Pointer[responsePipeline]
 
 	// IsRecording indicates whether the orchestrator is currently recording
@@ -72,15 +72,15 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 		audioOutput:  *newAudioOutput(nil),
 		speechPlayer: *newSpeechPlayer(),
 
-		eventPlayer: newEventPlayer(),
+		triggerPlayer: newTriggerPlayer(),
 	}
 	// TODO: Move up once pipeline is removed from the constructor
 	o.conversation = newConversation(o.currentResponsePipeline, o.llm.availableTools)
 
-	// TODO: Remove defaultEventHandler once we remove the interruption handlers
+	// TODO: Remove defaultTriggerHandler once we remove the interruption handlers
 	// probably on minor release
-	o.defaultEventHandler.orchestrator = o
-	o.eventHandler = &o.defaultEventHandler
+	o.defaultTriggerHandler.orchestrator = o
+	o.triggerHandler = &o.defaultTriggerHandler
 
 	for _, opt := range opts {
 		opt(o)
@@ -91,7 +91,7 @@ func NewOrchestrator(opts ...OrchestratorOption) *Orchestrator {
 
 func (o *Orchestrator) Close() {
 	o.closeOnce.Do(func() {
-		o.eventPlayer.Stop()
+		o.triggerPlayer.Stop()
 		o.currentResponsePipeline().Cancel()
 
 		if err := o.audioInput.Close(); err != nil {
@@ -108,7 +108,7 @@ func (o *Orchestrator) Close() {
 			span.SetStatus(codes.Error, recordedErr.Error())
 		}
 
-		o.eventPlayer.AwaitDone()
+		o.triggerPlayer.AwaitDone()
 	})
 }
 
@@ -135,7 +135,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 	// This method will probably need a EndConversation method to nicely clean
 	// up the conversation if the user choosed to do so.
 
-	if !o.eventPlayer.CanIngest() {
+	if !o.triggerPlayer.CanIngest() {
 		log.Println("Warning: orchestrator already closed, skipping Orchestrate")
 		return
 	}
@@ -151,24 +151,21 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 	o.speechPlayer.SetCallbacks(orchestrateOptions.onAudioEnded)
 	o.speechPlayer.SetSpokenTextCallback(orchestrateOptions.onSpokenText)
 	o.speechPlayer.SetSpokenTextDeltaCallback(orchestrateOptions.onSpokenTextDelta)
-	o.eventPlayer.SetOnCancel(orchestrateOptions.onCancellation)
 	o.speechToText.SetSpeechStateChangedCallback(orchestrateOptions.onSpeakingStateChanged)
 	o.speechToText.SetPartialInterimTranscriptionCallback(orchestrateOptions.onPartialInterimTranscription)
 	o.speechToText.SetInterimTranscriptionCallback(orchestrateOptions.onInterimTranscription)
 	o.speechToText.SetPartialTranscriptionCallback(orchestrateOptions.onPartialTranscription)
 	o.speechToText.SetTranscriptionCallback(orchestrateOptions.onTranscription)
-	o.speechToText.SetInvokeEvent(o.respondToEvent)
-
-	if started := o.eventPlayer.StartLoop(o.baseContext, func(ctx context.Context, event llms.EventV0) error {
+	if started := o.triggerPlayer.StartLoop(o.baseContext, func(ctx context.Context, trigger llms.TriggerV0) error {
 		pipeline := newResponsePipeline(o.llm.snapshot(), o.textToSpeech.Snapshot(), o.speechPlayer.Snapshot(), o.audioOutput.Snapshot(),
-			o.eventPlayer.OnCancel,
+			o.triggerPlayer.OnCancel,
 		)
 		if !o.responsePipeline.CompareAndSwap(nil, pipeline) {
 			return fmt.Errorf("active turn already in progress")
 		}
 		defer o.responsePipeline.CompareAndSwap(pipeline, nil)
 
-		activeTurn, err := o.conversation.startNewTurn(event)
+		activeTurn, err := o.conversation.startNewTurn(trigger)
 		if err != nil {
 			return err
 		}
@@ -188,7 +185,7 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 		}
 		span := trace.SpanFromContext(ctx)
 		span.SetAttributes(attribute.StringSlice("assistant_turn.interruptions", interruptionTypes))
-		span.SetAttributes(attribute.Int("assistant_turn.queued_events", o.eventPlayer.queuedEventCount()))
+		span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", o.triggerPlayer.queuedTriggerCount()))
 
 		if err := o.conversation.finaliseTurn(activeTurn.TurnV1); err != nil {
 			return fmt.Errorf("failed to finalise turn: %w", err)
@@ -222,11 +219,13 @@ func (o *Orchestrator) ConversationV1() ConversationV1 {
 	return o.conversation.Snapshot()
 }
 
-func (o *Orchestrator) Handle(event llms.EventV0) { o.respondToEvent(event) }
-func (o *Orchestrator) SendPrompt(prompt string)  { o.respondToEvent(events.NewUserPromptEvent(prompt)) }
-func (o *Orchestrator) CancelTurn()               { o.respondToEvent(events.NewCancelTurnEvent()) }
-func (o *Orchestrator) PauseTurn()                { o.respondToEvent(events.NewPauseTurnEvent()) }
-func (o *Orchestrator) UnpauseTurn()              { o.respondToEvent(events.NewUnpauseTurnEvent()) }
+func (o *Orchestrator) HandleTrigger(trigger llms.TriggerV0) { o.ingestTrigger(trigger) }
+func (o *Orchestrator) SendPrompt(prompt string) {
+	o.ingestTrigger(triggers.NewUserPromptTrigger(prompt))
+}
+func (o *Orchestrator) CancelTurn()  { o.ingestTrigger(triggers.NewCancelTurnTrigger()) }
+func (o *Orchestrator) PauseTurn()   { o.ingestTrigger(triggers.NewPauseTurnTrigger()) }
+func (o *Orchestrator) UnpauseTurn() { o.ingestTrigger(triggers.NewUnpauseTurnTrigger()) }
 
 func (o *Orchestrator) SendAudio(audio []byte) error { return o.speechToText.SendAudio(audio) }
 

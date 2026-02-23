@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const conversationEventQueueCapacity = 10
+const conversationTriggerQueueCapacity = 10
 const defaultSpeechPlayerSegmentationBoundaries = "?.!"
 
 type responsePipeline struct {
@@ -120,7 +120,7 @@ func (processor *responsePipeline) generateLLM(ctx context.Context, turn *active
 	ctx, span := tracer.Start(ctx, "generate llm")
 	defer span.End()
 
-	response, err := processor.llm.generate(ctx, turn.Event, history, processor.speechPlayer.AddTextChunk, func() bool {
+	response, err := processor.llm.generate(ctx, turn.Trigger, history, processor.speechPlayer.AddTextChunk, func() bool {
 		return processor.IsCancelled()
 	})
 	if err != nil {

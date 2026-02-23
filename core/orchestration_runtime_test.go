@@ -17,12 +17,12 @@ func TestCloseBeforeOrchestrateMarksClosed(t *testing.T) {
 	o := NewOrchestrator()
 	o.Close()
 
-	if o.eventPlayer.CanIngest() {
+	if o.triggerPlayer.CanIngest() {
 		t.Fatalf("expected orchestrator to be closed")
 	}
 
 	o.Orchestrate(context.Background())
-	if o.eventPlayer.CanIngest() {
+	if o.triggerPlayer.CanIngest() {
 		t.Fatalf("expected orchestrator to stay closed")
 	}
 }
@@ -42,7 +42,7 @@ func TestControlOperationsWithoutActivePipelineDoNotPanic(t *testing.T) {
 	o.Mute()
 	o.currentResponsePipeline().Close()
 
-	if !o.eventPlayer.CanIngest() {
+	if !o.triggerPlayer.CanIngest() {
 		t.Fatalf("expected orchestrator to remain open after no-op control operations")
 	}
 }
@@ -348,11 +348,11 @@ func TestCancelTurnEmitsCancellationCallbackOnce(t *testing.T) {
 }
 
 func TestInterruptionHandlingSeesUpdatedToolSet(t *testing.T) {
-	handler := &toolSnapshotEventHandler{}
+	handler := &toolSnapshotTriggerHandler{}
 	o := NewOrchestrator(
 		WithStreamingLLM(repeatingStreamLLMStub{chunk: "chunk", interval: 10 * time.Millisecond}),
 		WithTools(testTool("tool_a")),
-		WithEventHandlerV0(handler),
+		WithTriggerHandlerV0(handler),
 	)
 	defer o.Close()
 
@@ -507,13 +507,13 @@ type recordingAudioOutput struct {
 	clearCount int
 }
 
-type toolSnapshotEventHandler struct {
+type toolSnapshotTriggerHandler struct {
 	mu    sync.Mutex
 	names [][]string
 }
 
-func (handler *toolSnapshotEventHandler) HandleV0(_ context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) iter.Seq2[llms.EventV0, error] {
-	return func(yield func(llms.EventV0, error) bool) {
+func (handler *toolSnapshotTriggerHandler) HandleTriggerV0(_ context.Context, trigger llms.TriggerV0, conversation conversations.ActiveContextV0) iter.Seq2[llms.TriggerV0, error] {
+	return func(yield func(llms.TriggerV0, error) bool) {
 		if conversation.ActiveTurn() != nil {
 			tools := conversation.AvailableTools()
 			names := make([]string, 0, len(tools))
@@ -526,11 +526,11 @@ func (handler *toolSnapshotEventHandler) HandleV0(_ context.Context, event llms.
 			handler.mu.Unlock()
 		}
 
-		yield(event, nil)
+		yield(trigger, nil)
 	}
 }
 
-func (handler *toolSnapshotEventHandler) snapshot() [][]string {
+func (handler *toolSnapshotTriggerHandler) snapshot() [][]string {
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
 	cloned := make([][]string, len(handler.names))
@@ -540,7 +540,7 @@ func (handler *toolSnapshotEventHandler) snapshot() [][]string {
 	return cloned
 }
 
-func (handler *toolSnapshotEventHandler) latest() []string {
+func (handler *toolSnapshotTriggerHandler) latest() []string {
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
 	if len(handler.names) == 0 {

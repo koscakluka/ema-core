@@ -3,14 +3,14 @@ package openai
 import (
 	"testing"
 
-	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
+	"github.com/koscakluka/ema-core/core/triggers"
 )
 
 func TestToOpenAIMessages_DoesNotTruncateHistoryAfterToolCalls(t *testing.T) {
 	turns := []llms.TurnV1{
 		{
-			Event: events.NewUserPromptEvent("first prompt"),
+			Trigger: triggers.NewUserPromptTrigger("first prompt"),
 			ToolCalls: []llms.ToolCall{
 				{
 					ID:        "tool_1",
@@ -27,7 +27,7 @@ func TestToOpenAIMessages_DoesNotTruncateHistoryAfterToolCalls(t *testing.T) {
 			},
 		},
 		{
-			Event: events.NewUserPromptEvent("second prompt"),
+			Trigger: triggers.NewUserPromptTrigger("second prompt"),
 			Responses: []llms.TurnResponseV0{
 				{
 					Message:                 "What else can I help with?",

@@ -79,11 +79,11 @@ func TestSpeechToTextStartForwardsCallbacksAndInvokesEvents(t *testing.T) {
 		transcriptions = append(transcriptions, transcript)
 		mu.Unlock()
 	})
-	runtime.SetInvokeEvent(func(event llms.EventV0) {
-		if event != nil {
+	runtime.SetInvokeTrigger(func(trigger llms.TriggerV0) {
+		if trigger != nil {
 			invokedEvents.Add(1)
 			mu.Lock()
-			invokedEventNames = append(invokedEventNames, event.String())
+			invokedEventNames = append(invokedEventNames, trigger.String())
 			mu.Unlock()
 		}
 	})
@@ -135,14 +135,14 @@ func TestSpeechToTextIndividualSettersAcceptNilAndClearCallbacks(t *testing.T) {
 	runtime.SetPartialInterimTranscriptionCallback(func(string) { invocations.Add(1) })
 	runtime.SetPartialTranscriptionCallback(func(string) { invocations.Add(1) })
 	runtime.SetTranscriptionCallback(func(string) { invocations.Add(1) })
-	runtime.SetInvokeEvent(func(llms.EventV0) { invocations.Add(1) })
+	runtime.SetInvokeTrigger(func(llms.TriggerV0) { invocations.Add(1) })
 
 	runtime.SetSpeechStateChangedCallback(nil)
 	runtime.SetInterimTranscriptionCallback(nil)
 	runtime.SetPartialInterimTranscriptionCallback(nil)
 	runtime.SetPartialTranscriptionCallback(nil)
 	runtime.SetTranscriptionCallback(nil)
-	runtime.SetInvokeEvent(nil)
+	runtime.SetInvokeTrigger(nil)
 
 	runtime.invokeSpeechStarted()
 	runtime.invokeSpeechEnded()

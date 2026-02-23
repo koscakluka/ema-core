@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	"github.com/koscakluka/ema-core/core/audio"
-	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/speechtotext"
+	"github.com/koscakluka/ema-core/core/triggers"
 )
 
 type speechToText struct {
@@ -20,7 +20,7 @@ type speechToText struct {
 	onInterimTranscription        func(string)
 	onPartialTranscription        func(string)
 	onTranscription               func(string)
-	invokeEvent                   func(llms.EventV0)
+	invokeTrigger                 func(llms.TriggerV0)
 }
 
 func newSpeechToText(client SpeechToText) *speechToText {
@@ -32,7 +32,7 @@ func newSpeechToText(client SpeechToText) *speechToText {
 		onInterimTranscription:        func(string) {},
 		onPartialTranscription:        func(string) {},
 		onTranscription:               func(string) {},
-		invokeEvent:                   func(llms.EventV0) {},
+		invokeTrigger:                 func(llms.TriggerV0) {},
 	}
 }
 
@@ -155,12 +155,12 @@ func (s *speechToText) SetTranscriptionCallback(callback func(string)) {
 	}
 }
 
-func (s *speechToText) SetInvokeEvent(invokeEvent func(llms.EventV0)) {
+func (s *speechToText) SetInvokeTrigger(invokeTrigger func(llms.TriggerV0)) {
 	if s != nil {
-		if invokeEvent != nil {
-			s.invokeEvent = invokeEvent
+		if invokeTrigger != nil {
+			s.invokeTrigger = invokeTrigger
 		} else {
-			s.invokeEvent = func(llms.EventV0) {}
+			s.invokeTrigger = func(llms.TriggerV0) {}
 		}
 	}
 }
@@ -171,17 +171,17 @@ func (s *speechToText) isConfigured() bool {
 
 func (s *speechToText) invokeSpeechStarted() {
 	s.onSpeechStarted()
-	go s.invokeEvent(events.NewSpeechStartedEvent())
+	go s.invokeTrigger(triggers.NewSpeechStartedTrigger())
 }
 
 func (s *speechToText) invokeSpeechEnded() {
 	s.onSpeechEnded()
-	go s.invokeEvent(events.NewSpeechEndedEvent())
+	go s.invokeTrigger(triggers.NewSpeechEndedTrigger())
 }
 
 func (s *speechToText) invokeInterimTranscription(transcript string) {
 	s.onInterimTranscription(transcript)
-	go s.invokeEvent(events.NewInterimTranscriptionEvent(transcript))
+	go s.invokeTrigger(triggers.NewInterimTranscriptionTrigger(transcript))
 }
 
 func (s *speechToText) invokePartialInterimTranscription(transcript string) {
@@ -196,5 +196,5 @@ func (s *speechToText) invokeTranscription(transcript string) {
 	s.onPartialInterimTranscription("")
 	s.onInterimTranscription("")
 	s.onTranscription(transcript)
-	go s.invokeEvent(events.NewTranscriptionEvent(transcript))
+	go s.invokeTrigger(triggers.NewTranscriptionTrigger(transcript))
 }

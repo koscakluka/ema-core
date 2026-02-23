@@ -115,7 +115,7 @@ func (t *activeConversation) addInterruptionToActiveTurn(interruption llms.Inter
 	return true
 }
 
-func (t *activeConversation) startNewTurn(event llms.EventV0) (*activeTurn, error) {
+func (t *activeConversation) startNewTurn(trigger llms.TriggerV0) (*activeTurn, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -123,7 +123,7 @@ func (t *activeConversation) startNewTurn(event llms.EventV0) (*activeTurn, erro
 		return nil, fmt.Errorf("active turn already set")
 	}
 
-	t.activeTurn = newActiveTurn(event)
+	t.activeTurn = newActiveTurn(trigger)
 	return t.activeTurn, nil
 }
 
@@ -173,11 +173,11 @@ type activeTurn struct {
 	finalResponse *llms.TurnResponseV0
 }
 
-func newActiveTurn(event llms.EventV0) *activeTurn {
+func newActiveTurn(trigger llms.TriggerV0) *activeTurn {
 	return &activeTurn{
 		TurnV1: llms.TurnV1{
-			ID:    uuid.NewString(),
-			Event: event,
+			ID:      uuid.NewString(),
+			Trigger: trigger,
 		},
 		finalResponse: &llms.TurnResponseV0{},
 	}

@@ -107,17 +107,17 @@ func WithOrchestrationTools() OrchestratorOption {
 	return func(o *Orchestrator) { o.llm.appendTools(orchestrationTools(o)...) }
 }
 
-type EventHandlerV0 interface {
-	HandleV0(ctx context.Context, event llms.EventV0, conversation conversations.ActiveContextV0) iter.Seq2[llms.EventV0, error]
+type TriggerHandlerV0 interface {
+	HandleTriggerV0(ctx context.Context, trigger llms.TriggerV0, conversation conversations.ActiveContextV0) iter.Seq2[llms.TriggerV0, error]
 }
 
-func WithEventHandlerV0(handler EventHandlerV0) OrchestratorOption {
+func WithTriggerHandlerV0(handler TriggerHandlerV0) OrchestratorOption {
 	return func(o *Orchestrator) {
 		if handler == nil {
-			o.eventHandler = &o.defaultEventHandler
+			o.triggerHandler = &o.defaultTriggerHandler
 			return
 		}
-		o.eventHandler = handler
+		o.triggerHandler = handler
 	}
 }
 
@@ -142,7 +142,7 @@ type OrchestrateOption func(*OrchestrateOptions)
 // WithTranscriptionCallback registers a callback for final transcriptions
 // produced by the configured speech-to-text client.
 //
-// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// Triggers manually submitted through [Orchestrator.HandleTrigger] do not trigger this
 // callback.
 func WithTranscriptionCallback(callback func(transcript string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
@@ -153,7 +153,7 @@ func WithTranscriptionCallback(callback func(transcript string)) OrchestrateOpti
 // WithPartialTranscriptionCallback registers a callback for finalized
 // transcription segments produced by the configured speech-to-text client.
 //
-// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// Triggers manually submitted through [Orchestrator.HandleTrigger] do not trigger this
 // callback.
 func WithPartialTranscriptionCallback(callback func(transcript string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
@@ -164,7 +164,7 @@ func WithPartialTranscriptionCallback(callback func(transcript string)) Orchestr
 // WithInterimTranscriptionCallback registers a callback for interim
 // transcriptions produced by the configured speech-to-text client.
 //
-// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// Triggers manually submitted through [Orchestrator.HandleTrigger] do not trigger this
 // callback.
 func WithInterimTranscriptionCallback(callback func(transcript string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
@@ -175,7 +175,7 @@ func WithInterimTranscriptionCallback(callback func(transcript string)) Orchestr
 // WithPartialInterimTranscriptionCallback registers a callback for partial
 // interim transcriptions produced by the configured speech-to-text client.
 //
-// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// Triggers manually submitted through [Orchestrator.HandleTrigger] do not trigger this
 // callback.
 func WithPartialInterimTranscriptionCallback(callback func(transcript string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
@@ -186,7 +186,7 @@ func WithPartialInterimTranscriptionCallback(callback func(transcript string)) O
 // WithSpeakingStateChangedCallback registers a callback for speaking-state
 // updates produced by the configured speech-to-text client.
 //
-// Events manually submitted through [Orchestrator.Handle] do not trigger this
+// Triggers manually submitted through [Orchestrator.HandleTrigger] do not trigger this
 // callback.
 func WithSpeakingStateChangedCallback(callback func(isSpeaking bool)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {

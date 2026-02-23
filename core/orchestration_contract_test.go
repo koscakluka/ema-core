@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/koscakluka/ema-core/core/audio"
-	"github.com/koscakluka/ema-core/core/events"
+	"github.com/koscakluka/ema-core/core/triggers"
 )
 
 func TestResponseEndCallbackFiresWithoutLLM(t *testing.T) {
@@ -74,7 +74,7 @@ func TestHandleTranscriptionEventDoesNotTriggerTranscriptionCallback(t *testing.
 		}),
 	)
 
-	o.Handle(events.NewTranscriptionEvent("manual transcription event"))
+	o.HandleTrigger(triggers.NewTranscriptionTrigger("manual transcription event"))
 
 	select {
 	case <-responseEnded:

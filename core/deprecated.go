@@ -7,9 +7,9 @@ import (
 	"slices"
 
 	emaContext "github.com/koscakluka/ema-core/core/context"
-	"github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/interruptions"
 	"github.com/koscakluka/ema-core/core/llms"
+	"github.com/koscakluka/ema-core/core/triggers"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -18,10 +18,10 @@ type InterruptionHandlerV0 interface {
 	HandleV0(prompt string, turns []llms.Turn, tools []llms.Tool, orchestrator interruptions.OrchestratorV0) error
 }
 
-// Deprecated: use WithEventHandlerV0 instead.
+// Deprecated: use WithTriggerHandlerV0 instead.
 func WithInterruptionHandlerV0(handler InterruptionHandlerV0) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.defaultEventHandler.interruptionHandlerV0 = handler
+		o.defaultTriggerHandler.interruptionHandlerV0 = handler
 	}
 }
 
@@ -29,10 +29,10 @@ type InterruptionHandlerV1 interface {
 	HandleV1(id int64, orchestrator interruptions.OrchestratorV0, tools []llms.Tool) (*llms.InterruptionV0, error)
 }
 
-// Deprecated: use WithEventHandlerV0 instead.
+// Deprecated: use WithTriggerHandlerV0 instead.
 func WithInterruptionHandlerV1(handler InterruptionHandlerV1) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.defaultEventHandler.interruptionHandlerV1 = handler
+		o.defaultTriggerHandler.interruptionHandlerV1 = handler
 	}
 }
 
@@ -40,10 +40,10 @@ type InterruptionHandlerV2 interface {
 	HandleV2(ctx context.Context, id int64, orchestrator interruptions.OrchestratorV0, tools []llms.Tool) (*llms.InterruptionV0, error)
 }
 
-// Deprecated: use WithEventHandlerV0 instead.
+// Deprecated: use WithTriggerHandlerV0 instead.
 func WithInterruptionHandlerV2(handler InterruptionHandlerV2) OrchestratorOption {
 	return func(o *Orchestrator) {
-		o.defaultEventHandler.interruptionHandlerV2 = handler
+		o.defaultTriggerHandler.interruptionHandlerV2 = handler
 	}
 }
 
@@ -98,7 +98,7 @@ func WithAudioOutput(client AudioOutputV0) OrchestratorOption {
 // Deprecated: (since v0.0.16)
 func (o *Orchestrator) QueuePrompt(prompt string) {
 	go func() {
-		if ok := o.eventPlayer.Ingest(events.NewUserPromptEvent(prompt)); !ok {
+		if ok := o.triggerPlayer.Ingest(triggers.NewUserPromptTrigger(prompt)); !ok {
 			log.Printf("Warning: failed to queue prompt")
 		}
 	}()
@@ -395,7 +395,7 @@ func (t *activeConversation) RValues(yield func(llms.TurnV1) bool) {
 
 // ConversationV0 returns the legacy mutable conversation view.
 //
-// Deprecated: (since v0.0.17) use [github.com/koscakluka/ema-core/core/conversations.ActiveContextV0] via [EventHandlerV0.HandleV0] instead.
+// Deprecated: (since v0.0.17) use [github.com/koscakluka/ema-core/core/conversations.ActiveContextV0] via [TriggerHandlerV0.HandleTriggerV0] instead.
 func (o *Orchestrator) ConversationV0() emaContext.ConversationV0 {
 	return &o.conversation
 }
@@ -410,7 +410,7 @@ func (o *Orchestrator) CallTool(ctx context.Context, prompt string) error {
 	runtimeLLM := o.llm.snapshot()
 	_, err := runtimeLLM.generate(
 		ctx,
-		events.NewUserPromptEvent(prompt),
+		triggers.NewUserPromptTrigger(prompt),
 		o.conversation.History(),
 		nil,
 		func() bool { return o.currentResponsePipeline().IsCancelled() },

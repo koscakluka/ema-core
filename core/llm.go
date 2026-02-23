@@ -95,7 +95,7 @@ func (runtime *llm) snapshot() llm {
 
 func (runtime *llm) generate(
 	ctx context.Context,
-	event llms.EventV0,
+	trigger llms.TriggerV0,
 	conversation []llms.TurnV1,
 	onChunk func(string),
 	activeTurnCancelled func() bool,
@@ -108,10 +108,10 @@ func (runtime *llm) generate(
 
 	switch client := runtime.client.(type) {
 	case LLMWithStream:
-		return runtime.processStreaming(ctx, client, event, conversation, onChunk, activeTurnCancelled)
+		return runtime.processStreaming(ctx, client, trigger, conversation, onChunk, activeTurnCancelled)
 
 	case LLMWithPrompt:
-		return runtime.processPrompt(ctx, client, event, conversation, onChunk)
+		return runtime.processPrompt(ctx, client, trigger, conversation, onChunk)
 
 	default:
 		return nil, fmt.Errorf("unknown LLM type")
@@ -120,11 +120,11 @@ func (runtime *llm) generate(
 
 func (runtime *llm) processPrompt(ctx context.Context,
 	client LLMWithPrompt,
-	event llms.EventV0,
+	trigger llms.TriggerV0,
 	conversations []llms.TurnV1,
 	onChunk func(string),
 ) (*llms.Response, error) {
-	response, err := client.Prompt(ctx, event.String(),
+	response, err := client.Prompt(ctx, trigger.String(),
 		llms.WithTurnsV1(conversations...),
 		llms.WithTools(runtime.tools...),
 		llms.WithStream(func(chunk string) {
@@ -149,14 +149,14 @@ func (runtime *llm) processPrompt(ctx context.Context,
 
 func (runtime *llm) processStreaming(ctx context.Context,
 	client LLMWithStream,
-	event llms.EventV0,
+	trigger llms.TriggerV0,
 	conversation []llms.TurnV1,
 	onChunk func(string),
 	activeTurnCancelled func() bool,
 ) (*llms.Response, error) {
 	span := trace.SpanFromContext(ctx)
 
-	turn := llms.TurnV1{Event: event}
+	turn := llms.TurnV1{Trigger: trigger}
 	for {
 		stream := client.PromptWithStream(ctx, nil,
 			llms.WithTurnsV1(append(conversation, turn)...),

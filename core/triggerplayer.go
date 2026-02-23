@@ -13,12 +13,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type eventPlayer struct {
+type triggerPlayer struct {
 	// TODO: Queue should be owned by the conversation, it is an indicator of
 	// future work that might happen, and it should probably just be a slice,
 	// it is not processed that fast that it matters. + it could be useful
-	// to the event processor when events are received.
-	queue   chan eventQueueItem
+	// to the trigger processor when triggers are received.
+	queue   chan triggerQueueItem
 	closeCh chan struct{}
 	done    chan struct{}
 
@@ -30,9 +30,9 @@ type eventPlayer struct {
 	onCancel func()
 }
 
-func newEventPlayer() *eventPlayer {
-	return &eventPlayer{
-		queue:   make(chan eventQueueItem, conversationEventQueueCapacity), // TODO: Figure out good values for this.
+func newTriggerPlayer() *triggerPlayer {
+	return &triggerPlayer{
+		queue:   make(chan triggerQueueItem, conversationTriggerQueueCapacity), // TODO: Figure out good values for this.
 		closeCh: make(chan struct{}),
 		done:    make(chan struct{}),
 
@@ -40,7 +40,7 @@ func newEventPlayer() *eventPlayer {
 	}
 }
 
-func (b *eventPlayer) SetOnCancel(onCancel func()) {
+func (b *triggerPlayer) SetOnCancel(onCancel func()) {
 	if b == nil {
 		return
 	}
@@ -50,7 +50,7 @@ func (b *eventPlayer) SetOnCancel(onCancel func()) {
 	}
 }
 
-func (b *eventPlayer) CanIngest() bool {
+func (b *triggerPlayer) CanIngest() bool {
 	if b == nil {
 		return false
 	}
@@ -63,7 +63,7 @@ func (b *eventPlayer) CanIngest() bool {
 	}
 }
 
-func (loop *eventPlayer) StartLoop(baseCtx context.Context, startNewTurn func(context.Context, llms.EventV0) error) (started bool) {
+func (loop *triggerPlayer) StartLoop(baseCtx context.Context, startNewTurn func(context.Context, llms.TriggerV0) error) (started bool) {
 	if loop == nil || startNewTurn == nil || !loop.CanIngest() {
 		return false
 	}
@@ -82,11 +82,11 @@ func (loop *eventPlayer) StartLoop(baseCtx context.Context, startNewTurn func(co
 				select {
 				case <-loop.closeCh:
 					return
-				case queuedEvent := <-loop.queue:
+				case queuedTrigger := <-loop.queue:
 					if !loop.CanIngest() {
 						return
 					}
-					loop.processQueuedEvent(baseCtx, queuedEvent, startNewTurn)
+					loop.processQueuedTrigger(baseCtx, queuedTrigger, startNewTurn)
 				}
 			}
 		}()
@@ -95,7 +95,7 @@ func (loop *eventPlayer) StartLoop(baseCtx context.Context, startNewTurn func(co
 	return started
 }
 
-func (loop *eventPlayer) Stop() {
+func (loop *triggerPlayer) Stop() {
 	if loop == nil {
 		return
 	}
@@ -103,7 +103,7 @@ func (loop *eventPlayer) Stop() {
 	loop.endOnce.Do(func() { close(loop.closeCh) })
 }
 
-func (loop *eventPlayer) Clear() {
+func (loop *triggerPlayer) Clear() {
 	if loop == nil {
 		return
 	}
@@ -117,7 +117,7 @@ func (loop *eventPlayer) Clear() {
 	}
 }
 
-func (loop *eventPlayer) AwaitDone() {
+func (loop *triggerPlayer) AwaitDone() {
 	if loop == nil {
 		return
 	}
@@ -127,17 +127,17 @@ func (loop *eventPlayer) AwaitDone() {
 	}
 }
 
-type eventQueueItem struct {
-	event    llms.EventV0
+type triggerQueueItem struct {
+	trigger  llms.TriggerV0
 	queuedAt time.Time
 }
 
-func (loop *eventPlayer) Ingest(event llms.EventV0) bool {
+func (loop *triggerPlayer) Ingest(trigger llms.TriggerV0) bool {
 	if loop == nil || !loop.CanIngest() {
 		return false
 	}
 
-	queueItem := eventQueueItem{event: event, queuedAt: time.Now()}
+	queueItem := triggerQueueItem{trigger: trigger, queuedAt: time.Now()}
 	select {
 	case <-loop.closeCh:
 		return false
@@ -146,10 +146,10 @@ func (loop *eventPlayer) Ingest(event llms.EventV0) bool {
 	}
 }
 
-func (loop *eventPlayer) processQueuedEvent(
+func (loop *triggerPlayer) processQueuedTrigger(
 	baseContext context.Context,
-	queuedEvent eventQueueItem,
-	startNewTurn func(context.Context, llms.EventV0) error,
+	queuedTrigger triggerQueueItem,
+	startNewTurn func(context.Context, llms.TriggerV0) error,
 ) {
 	if loop == nil || startNewTurn == nil {
 		return
@@ -169,13 +169,13 @@ func (loop *eventPlayer) processQueuedEvent(
 	ctx, span := tracer.Start(turnCtx, "process turn")
 	defer span.End()
 
-	queuedTime := time.Since(queuedEvent.queuedAt).Seconds()
+	queuedTime := time.Since(queuedTrigger.queuedAt).Seconds()
 	span.AddEvent("taken out of queue", trace.WithAttributes(attribute.Float64("assistant_turn.queued_time", queuedTime)))
 	span.SetAttributes(attribute.Float64("assistant_turn.queued_time", queuedTime))
 
-	event := queuedEvent.event
+	trigger := queuedTrigger.trigger
 
-	if err := startNewTurn(ctx, event); err != nil {
+	if err := startNewTurn(ctx, trigger); err != nil {
 		err := fmt.Errorf("failed to start new turn: %v", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -184,7 +184,7 @@ func (loop *eventPlayer) processQueuedEvent(
 	}
 }
 
-func (loop *eventPlayer) queuedEventCount() int {
+func (loop *triggerPlayer) queuedTriggerCount() int {
 	if loop == nil {
 		return 0
 	}
@@ -192,7 +192,7 @@ func (loop *eventPlayer) queuedEventCount() int {
 	return len(loop.queue)
 }
 
-func (loop *eventPlayer) OnCancel() {
+func (loop *triggerPlayer) OnCancel() {
 	if loop == nil {
 		return
 	}
