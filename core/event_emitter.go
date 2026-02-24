@@ -49,6 +49,10 @@ func newCallbackEventEmitter(opts OrchestrateOptions) eventEmitter {
 			if opts.onAudio != nil {
 				opts.onAudio(typedEvent.Audio)
 			}
+		case events.AssistantPlaybackFrame:
+			if opts.onPlaybackAudio != nil {
+				opts.onPlaybackAudio(typedEvent.Audio)
+			}
 		case events.AssistantPlaybackEnded:
 			if opts.onAudioEnded != nil {
 				opts.onAudioEnded(typedEvent.Transcript)

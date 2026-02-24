@@ -132,6 +132,7 @@ type OrchestrateOptions struct {
 	onCancellation                func()
 	onInputAudio                  func(audio []byte)
 	onAudio                       func(audio []byte)
+	onPlaybackAudio               func(audio []byte)
 	onAudioEnded                  func(transcript string)
 	onSpokenText                  func(spokenText string)
 	onSpokenTextDelta             func(spokenTextDelta string)
@@ -215,6 +216,18 @@ func WithCancellationCallback(callback func()) OrchestrateOption {
 func WithAudioCallback(callback func(audio []byte)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
 		o.onAudio = callback
+	}
+}
+
+// WithPlaybackAudioCallback registers a callback for approximated playback
+// audio deltas.
+//
+// The callback receives append-only best-effort playback audio slices inferred
+// from mark-confirmed progress and elapsed playback time. This is distinct from
+// [WithAudioCallback], which receives synthesized audio generation frames.
+func WithPlaybackAudioCallback(callback func(audio []byte)) OrchestrateOption {
+	return func(o *OrchestrateOptions) {
+		o.onPlaybackAudio = callback
 	}
 }
 

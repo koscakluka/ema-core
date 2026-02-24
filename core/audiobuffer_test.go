@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -142,5 +143,116 @@ func TestApproximateCurrentSegmentProgressAndNextUpdateLockedFallsBackWhenPaused
 	}
 	if nextUpdate != defaultApproximateUpdateDelay {
 		t.Fatalf("expected fallback update delay %s, got %s", defaultApproximateUpdateDelay, nextUpdate)
+	}
+}
+
+func TestApproximatePlaybackDeltaReturnsAppendOnlyDelta(t *testing.T) {
+	b := newAudioBuffer(audio.EncodingInfo{SampleRate: 10, Format: audio.EncodingLinear16})
+	b.AddAudio([]byte{1, 2})
+	b.AddAudio([]byte{3, 4})
+
+	b.mu.Lock()
+	b.externalPlayhead = 0
+	b.internalPlayhead = 2
+	b.lastMarkTimestamp = time.Now().Add(-2 * time.Second)
+	b.mu.Unlock()
+
+	delta, playhead, _ := b.ApproximatePlaybackDelta(0)
+	if !bytes.Equal(delta, []byte{1, 2, 3, 4}) {
+		t.Fatalf("expected combined playback delta %v, got %v", []byte{1, 2, 3, 4}, delta)
+	}
+	if playhead != 2 {
+		t.Fatalf("expected playhead 2 after first delta, got %d", playhead)
+	}
+
+	nextDelta, nextPlayhead, _ := b.ApproximatePlaybackDelta(playhead)
+	if len(nextDelta) != 0 {
+		t.Fatalf("expected no second delta after catch-up, got %v", nextDelta)
+	}
+	if nextPlayhead != 2 {
+		t.Fatalf("expected playhead to remain 2, got %d", nextPlayhead)
+	}
+}
+
+func TestApproximatePlaybackDeltaSkipsRegression(t *testing.T) {
+	b := newAudioBuffer(audio.EncodingInfo{SampleRate: 10, Format: audio.EncodingLinear16})
+	b.AddAudio([]byte{1, 2})
+	b.AddAudio([]byte{3, 4})
+
+	b.mu.Lock()
+	b.externalPlayhead = 0
+	b.internalPlayhead = 2
+	b.lastMarkTimestamp = time.Now().Add(-2 * time.Second)
+	b.mu.Unlock()
+
+	_, playhead, _ := b.ApproximatePlaybackDelta(0)
+	if playhead != 2 {
+		t.Fatalf("expected initial playhead 2, got %d", playhead)
+	}
+
+	b.mu.Lock()
+	b.paused = true
+	b.externalPlayhead = 0
+	b.internalPlayhead = 1
+	b.mu.Unlock()
+
+	delta, regressedPlayhead, _ := b.ApproximatePlaybackDelta(playhead)
+	if len(delta) != 0 {
+		t.Fatalf("expected regression to emit no delta, got %v", delta)
+	}
+	if regressedPlayhead != playhead {
+		t.Fatalf("expected playhead to stay %d on regression, got %d", playhead, regressedPlayhead)
+	}
+}
+
+func TestConfirmMarkLegacyModeDoesNotFinishForNonTerminalMark(t *testing.T) {
+	b := newAudioBuffer(audio.EncodingInfo{SampleRate: 10, Format: audio.EncodingLinear16})
+	b.SetUsingLegacyTTSMode()
+	b.AddAudio([]byte{1, 2, 3})
+	b.Mark()
+
+	b.mu.Lock()
+	if len(b.marks) != 1 {
+		b.mu.Unlock()
+		t.Fatalf("expected exactly one mark")
+	}
+	markID := b.marks[0].ID
+	b.marks[0].broadcasted = true
+	b.mu.Unlock()
+
+	if ok := b.ConfirmMark(markID); !ok {
+		t.Fatalf("expected mark to be confirmed")
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.legacyAllAudioLoaded {
+		t.Fatalf("expected legacy completion to stay false for non-terminal mark")
+	}
+}
+
+func TestConfirmMarkLegacyModeFinishesForTerminalMark(t *testing.T) {
+	b := newAudioBuffer(audio.EncodingInfo{SampleRate: 10, Format: audio.EncodingLinear16})
+	b.SetUsingLegacyTTSMode()
+	b.AddAudio([]byte{1, 2, 3})
+	b.Mark(true)
+
+	b.mu.Lock()
+	if len(b.marks) != 1 {
+		b.mu.Unlock()
+		t.Fatalf("expected exactly one mark")
+	}
+	markID := b.marks[0].ID
+	b.marks[0].broadcasted = true
+	b.mu.Unlock()
+
+	if ok := b.ConfirmMark(markID); !ok {
+		t.Fatalf("expected mark to be confirmed")
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.legacyAllAudioLoaded {
+		t.Fatalf("expected legacy completion to become true for terminal mark")
 	}
 }

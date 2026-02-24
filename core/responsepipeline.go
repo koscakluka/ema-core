@@ -200,11 +200,14 @@ func (processor *responsePipeline) composeTTSEventEmitter() eventEmitter {
 	return func(event events.Event) {
 		switch typedEvent := event.(type) {
 		case events.AssistantSpeechFrame:
-			processor.speechPlayer.AddAudioChunk(typedEvent.Audio)
+			processor.speechPlayer.AddAudio(typedEvent.Audio)
 		case events.AssistantSpeechMarkGenerated:
-			processor.speechPlayer.AddAudioMark(typedEvent.Transcript)
+			// Legacy TTS signals terminal/end-of-stream marks with an empty
+			// transcript payload. Preserve that signal explicitly so legacy
+			// playback completion does not fire on non-terminal marks.
+			processor.speechPlayer.AddMark(typedEvent.Transcript == "")
 		case events.AssistantSpeechFinal:
-			processor.speechPlayer.AllAudioLoaded()
+			processor.speechPlayer.FinishAudio()
 		}
 
 		processor.emitEvent(event)
@@ -223,19 +226,19 @@ func (processor *responsePipeline) processSpeech(
 	}
 
 	if processor.textToSpeech.IsLegacyMode() {
-		processor.speechPlayer.EnableLegacyTTSMode()
+		processor.speechPlayer.EnableLegacyMode()
 	}
 
 	_, span := tracer.Start(ctx, "passing speech to audio output")
 	defer span.End()
 
-bufferReadingLoop:
+speechLoop:
 	for audioOrMark := range processor.speechPlayer.Audio {
 		switch audioOrMark.Type {
 		case audioOrMarkTypeAudio:
 			if processor.textToSpeech.IsMuted() || processor.IsCancelled() {
 				processor.audioOutput.Clear()
-				break bufferReadingLoop
+				break speechLoop
 			}
 
 			processor.audioOutput.SendAudio(audioOrMark.Audio)
@@ -245,11 +248,12 @@ bufferReadingLoop:
 			span.AddEvent("received mark", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
 			processor.audioOutput.Mark(mark, func(mark string) {
 				span.AddEvent("mark played", trace.WithAttributes(attribute.String("mark", mark), attribute.String("audio_output.version", "v1")))
-				if transcript := processor.speechPlayer.OnAudioOutputMarkPlayed(mark); transcript != nil {
+				if transcript := processor.speechPlayer.ConfirmOutputMark(mark); transcript != nil {
 					turn.finalResponse.SpokenResponse += *transcript
 				}
 			})
 		}
+
 	}
 
 	processor.audioOutput.SendAudio([]byte{})
@@ -274,7 +278,7 @@ func (p *responsePipeline) Unpause() {
 func (p *responsePipeline) StopSpeaking() {
 	if p != nil {
 		p.textToSpeech.Mute()
-		p.speechPlayer.StopAudioAndUnblock()
+		p.speechPlayer.StopAndUnblock()
 		p.audioOutput.Clear()
 	}
 }

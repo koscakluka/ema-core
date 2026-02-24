@@ -24,6 +24,7 @@ func TestResponsePipelineBridgesTTSEventsToSpeechPlayerAndAudioOutput(t *testing
 
 	responseEnded := make(chan struct{}, 1)
 	var callbackAudioChunks atomic.Int32
+	var callbackPlaybackAudioChunks atomic.Int32
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -32,6 +33,11 @@ func TestResponsePipelineBridgesTTSEventsToSpeechPlayerAndAudioOutput(t *testing
 		WithAudioCallback(func(audio []byte) {
 			if len(audio) > 0 {
 				callbackAudioChunks.Add(1)
+			}
+		}),
+		WithPlaybackAudioCallback(func(audio []byte) {
+			if len(audio) > 0 {
+				callbackPlaybackAudioChunks.Add(1)
 			}
 		}),
 		WithResponseEndCallback(func() {
@@ -59,6 +65,12 @@ func TestResponsePipelineBridgesTTSEventsToSpeechPlayerAndAudioOutput(t *testing
 	}
 	if got := callbackAudioChunks.Load(); got == 0 {
 		t.Fatalf("expected WithAudioCallback to receive bridged tts audio")
+	}
+	waitForCondition(t, 2*time.Second, "playback audio callback", func() bool {
+		return callbackPlaybackAudioChunks.Load() > 0
+	})
+	if got := callbackPlaybackAudioChunks.Load(); got == 0 {
+		t.Fatalf("expected WithPlaybackAudioCallback to receive playback audio")
 	}
 }
 

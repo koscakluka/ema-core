@@ -20,8 +20,9 @@ type speechPlayer struct {
 	text        []string
 	playedMarks int
 
-	lastEmittedSpokenText string
-	hasEmittedSpokenText  bool
+	lastEmittedSpokenText       string
+	hasEmittedSpokenText        bool
+	lastEmittedPlaybackPlayhead int
 
 	segmentationBoundaries string
 	emitEvent              eventEmitter
@@ -42,17 +43,14 @@ func (p *speechPlayer) InitBuffers(encodingInfo audio.EncodingInfo, segmentation
 		p.playedMarks = 0
 		p.lastEmittedSpokenText = ""
 		p.hasEmittedSpokenText = false
+		p.lastEmittedPlaybackPlayhead = 0
 		p.segmentationBoundaries = segmentationBoundaries
 	})
 }
 
 func (p *speechPlayer) AddTextChunk(chunk string) {
 	if chunk != "" {
-		p.lockFor(func() {
-			if p.textBuffer != nil {
-				p.textBuffer.AddChunk(chunk)
-			}
-		})
+		p.withTextBuffer(func(textBuffer *textBuffer) { textBuffer.AddChunk(chunk) })
 	}
 }
 
@@ -100,61 +98,34 @@ func (p *speechPlayer) TextOrMarks(yield func(textOrMark) bool) {
 }
 
 func (p *speechPlayer) TextComplete() {
-	p.rLockFor(func() {
-		if p.textBuffer != nil {
-			p.textBuffer.TextComplete()
-		}
-	})
+	p.withTextBuffer(func(textBuffer *textBuffer) { textBuffer.TextComplete() })
 }
 
 func (p *speechPlayer) ClearText() {
-	p.rLockFor(func() {
-		if p.textBuffer != nil {
-			p.textBuffer.Clear()
-		}
-	})
+	p.withTextBuffer(func(textBuffer *textBuffer) { textBuffer.Clear() })
 }
 
-func (p *speechPlayer) FullText() string {
-	var text string
-	p.rLockFor(func() {
-		if p.textBuffer != nil {
-			text = p.textBuffer.String()
-		}
-	})
+func (p *speechPlayer) FullText() (text string) {
+	p.withTextBuffer(func(textBuffer *textBuffer) { text = textBuffer.String() })
 	return text
 }
 
-func (p *speechPlayer) AddAudioChunk(audio []byte) {
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			p.audioBuffer.AddAudio(audio)
-		}
-	})
+func (p *speechPlayer) AddAudio(audio []byte) {
+	p.withAudioBuffer(func(audioBuffer *audioBuffer) { audioBuffer.AddAudio(audio) })
 }
 
-func (p *speechPlayer) AddAudioMark(transcript string) {
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			p.audioBuffer.Mark(transcript)
-		}
-	})
+// AddMark forwards a generated TTS mark to the audio buffer.
+//
+// Optional terminal=true marks explicit end-of-stream in legacy mode.
+func (p *speechPlayer) AddMark(isTerminal ...bool) {
+	terminal := len(isTerminal) > 0 && isTerminal[0]
+	p.withAudioBuffer(func(audioBuffer *audioBuffer) { audioBuffer.Mark(terminal) })
 }
-
-func (p *speechPlayer) AllAudioLoaded() {
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			p.audioBuffer.AllAudioLoaded()
-		}
-	})
+func (p *speechPlayer) FinishAudio() {
+	p.withAudioBuffer(func(audioBuffer *audioBuffer) { audioBuffer.AllAudioLoaded() })
 }
-
-func (p *speechPlayer) EnableLegacyTTSMode() {
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			p.audioBuffer.SetUsingLegacyTTSMode()
-		}
-	})
+func (p *speechPlayer) EnableLegacyMode() {
+	p.withAudioBuffer(func(audioBuffer *audioBuffer) { audioBuffer.SetUsingLegacyTTSMode() })
 }
 
 func (p *speechPlayer) Audio(yield func(audioOrMark) bool) {
@@ -163,110 +134,142 @@ func (p *speechPlayer) Audio(yield func(audioOrMark) bool) {
 
 	if audioBuffer != nil {
 		emitterDone := make(chan struct{})
-		go p.startApproximateSpokenTextEmitter(emitterDone)
-		audioBuffer.Audio(yield)
+		go p.runProgressEmitter(emitterDone)
+		playbackStarted := false
+		audioBuffer.Audio(func(item audioOrMark) bool {
+			consumed := yield(item)
+			if consumed && !playbackStarted {
+				p.emitEvent(events.NewAssistantPlaybackStarted())
+				playbackStarted = true
+			}
+			return consumed
+		})
 		close(emitterDone)
+		p.emitPlaybackProgress()
 	}
 
-	p.OnAudioEnded(p.FullText())
+	p.emitEvent(events.NewAssistantPlaybackEnded(p.FullText()))
 }
 
-func (p *speechPlayer) OnAudioOutputMarkPlayed(id string) *string {
-	var transcript *string
+func (p *speechPlayer) ConfirmOutputMark(id string) *string {
 	confirmed := false
-	p.lockFor(func() {
-		if p.audioBuffer != nil {
-			transcript = p.audioBuffer.GetMarkText(id)
-			confirmed = p.audioBuffer.ConfirmMark(id)
-		}
+	p.withAudioBuffer(func(audioBuffer *audioBuffer) {
+		confirmed = audioBuffer.ConfirmMark(id)
 	})
 	if !confirmed {
 		return nil
 	}
 
-	p.ConfirmMark()
-	p.EmitApproximateSpokenText(p.ApproximateCurrentSegmentProgress())
+	transcript := p.confirmTextMark()
+	p.emitPlaybackProgress()
+	if transcript != nil {
+		p.emitEvent(events.NewAssistantPlaybackMarkPlayed(id, *transcript))
+	}
 	return transcript
 }
 
-func (p *speechPlayer) ApproximateCurrentSegmentProgress() float64 {
-	var progress float64
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			progress = p.audioBuffer.ApproximateCurrentSegmentProgress()
-		}
-	})
-	return progress
-}
-
-func (p *speechPlayer) ApproximateCurrentSegmentProgressAndNextUpdate() (float64, time.Duration) {
-	progress, nextUpdate := 0.0, defaultApproximateUpdateDelay
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			progress, nextUpdate = p.audioBuffer.ApproximateCurrentSegmentProgressAndNextUpdate()
-		}
-	})
-	return progress, nextUpdate
-}
-
 func (p *speechPlayer) PauseAudio() {
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			p.audioBuffer.Pause()
-		}
-	})
+	p.withAudioBuffer(func(audioBuffer *audioBuffer) { audioBuffer.Pause() })
 }
 
 func (p *speechPlayer) ResumeAudio() {
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			p.audioBuffer.Resume()
-		}
-	})
+	p.withAudioBuffer(func(audioBuffer *audioBuffer) { audioBuffer.Resume() })
 }
 
 func (p *speechPlayer) StopAudio() {
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			p.audioBuffer.Stop()
-		}
+	p.withAudioBuffer(func(audioBuffer *audioBuffer) { audioBuffer.Stop() })
+}
+
+func (p *speechPlayer) StopAndUnblock() {
+	p.withAudioBuffer(func(audioBuffer *audioBuffer) {
+		audioBuffer.AddAudio([]byte{})
+		audioBuffer.Stop()
 	})
 }
 
-func (p *speechPlayer) StopAudioAndUnblock() {
-	p.rLockFor(func() {
-		if p.audioBuffer != nil {
-			p.audioBuffer.AddAudio([]byte{})
-			p.audioBuffer.Stop()
+func (p *speechPlayer) runProgressEmitter(done <-chan struct{}) {
+	if p == nil {
+		return
+	}
+
+	nextUpdate := p.emitPlaybackProgress()
+	timer := time.NewTimer(clampSpokenTextUpdateInterval(nextUpdate))
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-timer.C:
+			nextUpdate = p.emitPlaybackProgress()
+			timer.Reset(clampSpokenTextUpdateInterval(nextUpdate))
 		}
-	})
+	}
 }
 
-func (p *speechPlayer) EmitApproximateSpokenTextFromAudioProgressAndNextUpdate() time.Duration {
-	progress, nextUpdate := p.ApproximateCurrentSegmentProgressAndNextUpdate()
-	p.EmitApproximateSpokenText(progress)
+func (p *speechPlayer) emitPlaybackProgress() time.Duration {
+	if p == nil {
+		return defaultApproximateUpdateDelay
+	}
+
+	var spokenText string
+	var spokenDelta string
+	emitSpokenText := false
+	var frame []byte
+	nextUpdate := defaultApproximateUpdateDelay
+	p.lockFor(func() {
+		if p.audioBuffer == nil {
+			return
+		}
+
+		progress, delta, approxPlayhead, updateDelay := p.audioBuffer.ApproximateProgressAndPlaybackDelta(p.lastEmittedPlaybackPlayhead)
+		nextUpdate = updateDelay
+		if approxPlayhead > p.lastEmittedPlaybackPlayhead {
+			p.lastEmittedPlaybackPlayhead = approxPlayhead
+		}
+		if len(delta) > 0 {
+			frame = delta
+		}
+
+		spokenText, spokenDelta, emitSpokenText = p.nextSpokenTextUpdateLocked(progress)
+	})
+
+	if emitSpokenText {
+		p.emitEvent(events.NewAssistantPlaybackTranscriptUpdated(spokenText))
+		p.emitEvent(events.NewAssistantPlaybackTranscriptSegment(spokenDelta))
+	}
+
+	if len(frame) > 0 {
+		p.emitEvent(events.NewAssistantPlaybackFrame(frame))
+	}
+
 	return nextUpdate
 }
 
-func (p *speechPlayer) startApproximateSpokenTextEmitter(done <-chan struct{}) {
-	if p != nil {
-		progress, nextUpdate := p.ApproximateCurrentSegmentProgressAndNextUpdate()
-		if p.ApproximateSpokenTextSoFar(progress) != "" {
-			p.EmitApproximateSpokenText(progress)
-		}
+func (p *speechPlayer) nextSpokenTextUpdateLocked(currentSegmentProgress float64) (string, string, bool) {
+	spokenText := p.approximateSpokenTextSoFarLocked(currentSegmentProgress)
 
-		timer := time.NewTimer(clampSpokenTextUpdateInterval(nextUpdate))
-		defer timer.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-timer.C:
-				nextUpdate = p.EmitApproximateSpokenTextFromAudioProgressAndNextUpdate()
-				timer.Reset(clampSpokenTextUpdateInterval(nextUpdate))
-			}
-		}
+	previousSpokenText := p.lastEmittedSpokenText
+	hasPreviousEmission := p.hasEmittedSpokenText
+	if hasPreviousEmission && spokenText == previousSpokenText {
+		return "", "", false
 	}
+	if !hasPreviousEmission && spokenText == "" {
+		return "", "", false
+	}
+	if hasPreviousEmission && !strings.HasPrefix(spokenText, previousSpokenText) {
+		return "", "", false
+	}
+
+	p.lastEmittedSpokenText = spokenText
+	p.hasEmittedSpokenText = true
+
+	spokenDelta := spokenText
+	if hasPreviousEmission {
+		spokenDelta = spokenText[len(previousSpokenText):]
+	}
+
+	return spokenText, spokenDelta, true
 }
 
 func (p *speechPlayer) Snapshot() *speechPlayer {
@@ -293,13 +296,23 @@ func (p *speechPlayer) SetEventEmitter(emitEvent eventEmitter) {
 	})
 }
 
-func (p *speechPlayer) ConfirmMark() {
+func (p *speechPlayer) confirmTextMark() *string {
+	if p == nil {
+		return nil
+	}
+
+	var transcript *string
 	p.lockFor(func() {
 		if p.playedMarks >= len(p.text) {
 			return
 		}
+
+		segment := p.text[p.playedMarks]
+		transcript = &segment
 		p.playedMarks++
 	})
+
+	return transcript
 }
 
 func (p *speechPlayer) SpokenTextSoFar() string {
@@ -325,14 +338,10 @@ func (p *speechPlayer) SpokenTextSoFar() string {
 	return s
 
 }
-
-func (p *speechPlayer) ApproximateSpokenTextSoFar(currentSegmentProgress float64) string {
+func (p *speechPlayer) approximateSpokenTextSoFarLocked(currentSegmentProgress float64) string {
 	if p == nil {
 		return ""
 	}
-
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 
 	if currentSegmentProgress < 0 {
 		currentSegmentProgress = 0
@@ -369,40 +378,24 @@ func (p *speechPlayer) ApproximateSpokenTextSoFar(currentSegmentProgress float64
 	return spoken.String()
 }
 
-func (p *speechPlayer) EmitApproximateSpokenText(currentSegmentProgress float64) {
-	if p == nil {
-		return
+func (p *speechPlayer) withTextBuffer(f func(*textBuffer)) {
+	var textBuffer *textBuffer
+	p.rLockFor(func() {
+		textBuffer = p.textBuffer
+	})
+	if textBuffer != nil {
+		f(textBuffer)
 	}
-
-	spokenText := p.ApproximateSpokenTextSoFar(currentSegmentProgress)
-
-	p.mu.Lock()
-	previousSpokenText := p.lastEmittedSpokenText
-	hasPreviousEmission := p.hasEmittedSpokenText
-	if p.hasEmittedSpokenText && spokenText == p.lastEmittedSpokenText {
-		p.mu.Unlock()
-		return
-	}
-	if hasPreviousEmission && !strings.HasPrefix(spokenText, previousSpokenText) {
-		p.mu.Unlock()
-		return
-	}
-	p.lastEmittedSpokenText = spokenText
-	p.hasEmittedSpokenText = true
-	p.mu.Unlock()
-
-	p.emitEvent(events.NewAssistantPlaybackTranscriptUpdated(spokenText))
-
-	segment := spokenText
-	if hasPreviousEmission {
-		segment = spokenText[len(previousSpokenText):]
-	}
-
-	p.emitEvent(events.NewAssistantPlaybackTranscriptSegment(segment))
 }
 
-func (p *speechPlayer) OnAudioEnded(transcript string) {
-	p.emitEvent(events.NewAssistantPlaybackEnded(transcript))
+func (p *speechPlayer) withAudioBuffer(f func(*audioBuffer)) {
+	var audioBuffer *audioBuffer
+	p.rLockFor(func() {
+		audioBuffer = p.audioBuffer
+	})
+	if audioBuffer != nil {
+		f(audioBuffer)
+	}
 }
 
 func (p *speechPlayer) lockFor(f func()) {

@@ -35,8 +35,8 @@ type audioBuffer struct {
 
 type audioBufferMark struct {
 	ID          string
-	transcript  string
 	position    int
+	terminal    bool
 	broadcasted bool
 	confirmed   bool
 }
@@ -181,6 +181,61 @@ func (b *audioBuffer) ApproximateCurrentSegmentProgressAndNextUpdate() (float64,
 	return b.approximateCurrentSegmentProgressAndNextUpdateLocked(time.Now())
 }
 
+func (b *audioBuffer) ApproximateProgressAndPlaybackDelta(lastEmittedPlayhead int) (float64, []byte, int, time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	now := time.Now()
+	progress, nextUpdate := b.approximateCurrentSegmentProgressAndNextUpdateLocked(now)
+	delta, approxPlayhead := b.approximatePlaybackDeltaLocked(lastEmittedPlayhead, now)
+
+	return progress, delta, approxPlayhead, nextUpdate
+}
+
+func (b *audioBuffer) ApproximatePlaybackDelta(lastEmittedPlayhead int) ([]byte, int, time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	now := time.Now()
+	nextUpdate := b.approximateNextPlayheadStepDelayLocked(now)
+	delta, approxPlayhead := b.approximatePlaybackDeltaLocked(lastEmittedPlayhead, now)
+
+	return delta, approxPlayhead, nextUpdate
+}
+
+func (b *audioBuffer) approximatePlaybackDeltaLocked(lastEmittedPlayhead int, now time.Time) ([]byte, int) {
+	if lastEmittedPlayhead < 0 {
+		lastEmittedPlayhead = 0
+	}
+	if lastEmittedPlayhead > len(b.audio) {
+		lastEmittedPlayhead = len(b.audio)
+	}
+
+	approxPlayhead := b.approximatePlayheadLocked(now)
+	if approxPlayhead < lastEmittedPlayhead {
+		return nil, lastEmittedPlayhead
+	}
+	if approxPlayhead > len(b.audio) {
+		approxPlayhead = len(b.audio)
+	}
+
+	if approxPlayhead == lastEmittedPlayhead {
+		return nil, approxPlayhead
+	}
+
+	deltaLen := audioLen(b.audio[lastEmittedPlayhead:approxPlayhead])
+	if deltaLen == 0 {
+		return nil, approxPlayhead
+	}
+
+	delta := make([]byte, 0, deltaLen)
+	for _, chunk := range b.audio[lastEmittedPlayhead:approxPlayhead] {
+		delta = append(delta, chunk...)
+	}
+
+	return delta, approxPlayhead
+}
+
 // audioDoneLocked is safe to call from a locked context.
 func (b *audioBuffer) audioDoneLocked() bool {
 
@@ -188,28 +243,22 @@ func (b *audioBuffer) audioDoneLocked() bool {
 		b.externalPlayhead == len(b.audio)
 }
 
-func (b *audioBuffer) Mark(transcript string) {
+// Mark appends a mark at the current audio position.
+//
+// When legacy TTS mode is active, terminal marks are used as an explicit
+// end-of-stream signal to avoid treating a transient "last known" mark as
+// final while more chunks may still arrive.
+func (b *audioBuffer) Mark(isTerminal ...bool) {
+	terminal := len(isTerminal) > 0 && isTerminal[0]
+
 	b.mu.Lock()
 	b.marks = append(b.marks, audioBufferMark{
-		ID:         uuid.NewString(),
-		transcript: transcript,
-		position:   len(b.audio),
+		ID:       uuid.NewString(),
+		position: len(b.audio),
+		terminal: terminal,
 	})
 	b.mu.Unlock()
 	b.signalUpdate()
-}
-
-func (b *audioBuffer) GetMarkText(id string) *string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	for i := range b.marks {
-		if b.marks[i].ID == id {
-			transcript := b.marks[i].transcript
-			return &transcript
-		}
-	}
-	return nil
 }
 
 func (b *audioBuffer) ConfirmMark(id string) bool {
@@ -232,7 +281,7 @@ func (b *audioBuffer) ConfirmMark(id string) bool {
 			if (b.allAudioLoaded ||
 				// HACK: Following condition is purely for using old tts interface
 				// TODO: Remove this once we can remove the old TTS version
-				(b.usingWithLegacyTTS && i == len(b.marks)-1 && b.marks[i].transcript == "")) &&
+				(b.usingWithLegacyTTS && i == len(b.marks)-1 && b.marks[i].terminal)) &&
 				b.externalPlayhead == len(b.audio) {
 				b.legacyAllAudioLoaded = true
 				shouldSignal = true
