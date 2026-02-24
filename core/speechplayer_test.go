@@ -179,7 +179,7 @@ func TestSpeechPlayerEmitApproximateSpokenTextDeltaReportsIncrementalChange(t *t
 	}
 }
 
-func TestSpeechPlayerEmitApproximateSpokenTextDeltaFallsBackToReplacement(t *testing.T) {
+func TestSpeechPlayerEmitApproximateSpokenTextDeltaSkipsRegression(t *testing.T) {
 	player := newSpeechPlayer()
 
 	setTextSegments(player, "Hello")
@@ -194,14 +194,11 @@ func TestSpeechPlayerEmitApproximateSpokenTextDeltaFallsBackToReplacement(t *tes
 	player.EmitApproximateSpokenText(1)
 	player.EmitApproximateSpokenText(0.2)
 
-	if len(deltas) != 2 {
-		t.Fatalf("expected 2 spoken text deltas, got %d", len(deltas))
+	if len(deltas) != 1 {
+		t.Fatalf("expected 1 spoken text delta when playback progress regresses, got %d", len(deltas))
 	}
 	if deltas[0] != "Hello" {
 		t.Fatalf("expected first delta %q, got %q", "Hello", deltas[0])
-	}
-	if deltas[1] != "H" {
-		t.Fatalf("expected replacement delta %q, got %q", "H", deltas[1])
 	}
 }
 

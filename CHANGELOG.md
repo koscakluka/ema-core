@@ -17,6 +17,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - speaking-state events are now split into explicit
   `UserSpeechStarted`/`UserSpeechEnded` events
 
+### Fixed
+
+- playback transcript segment events are now append-only; regressions no longer
+  emit replacement segments
+
 ## [v0.0.18] - 2026-02-23
 
 ### Added

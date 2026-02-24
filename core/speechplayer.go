@@ -383,6 +383,10 @@ func (p *speechPlayer) EmitApproximateSpokenText(currentSegmentProgress float64)
 		p.mu.Unlock()
 		return
 	}
+	if hasPreviousEmission && !strings.HasPrefix(spokenText, previousSpokenText) {
+		p.mu.Unlock()
+		return
+	}
 	p.lastEmittedSpokenText = spokenText
 	p.hasEmittedSpokenText = true
 	p.mu.Unlock()
@@ -390,7 +394,7 @@ func (p *speechPlayer) EmitApproximateSpokenText(currentSegmentProgress float64)
 	p.emitEvent(events.NewAssistantPlaybackTranscriptUpdated(spokenText))
 
 	segment := spokenText
-	if hasPreviousEmission && strings.HasPrefix(spokenText, previousSpokenText) {
+	if hasPreviousEmission {
 		segment = spokenText[len(previousSpokenText):]
 	}
 

@@ -236,8 +236,8 @@ func WithSpokenTextCallback(callback func(spokenText string)) OrchestrateOption 
 
 // WithSpokenTextDeltaCallback registers a callback for spoken-text deltas.
 //
-// The callback receives only incremental additions when possible. If spoken
-// text regresses (for example after a rewind), it receives a replacement value.
+// The callback receives append-only incremental transcript segments. If
+// playback progress regresses, no replacement segment is emitted.
 func WithSpokenTextDeltaCallback(callback func(spokenTextDelta string)) OrchestrateOption {
 	return func(o *OrchestrateOptions) {
 		o.onSpokenTextDelta = callback
