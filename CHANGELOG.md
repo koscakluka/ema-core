@@ -8,6 +8,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v0.0.19] - 2026-02-24
+
+### Added
+
+- orchestration now emits lifecycle events for model responses, tool calls, and
+  turn state changes so receivers can track progress end-to-end
+- playback updates now include audio deltas and terminal legacy marks so
+  spoken-text progress remains complete and compatible with older mark handling
+
 ### Changed
 
 - **Breaking:** renamed orchestration event taxonomy to receiver-facing groups and
@@ -276,7 +285,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [v0.0.12] - 2025-11-05
 
-[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.18...HEAD
+[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.19...HEAD
+[v0.0.19]: https://github.com/koscakluka/ema-core/compare/v0.0.18...v0.0.19
 [v0.0.18]: https://github.com/koscakluka/ema-core/compare/v0.0.17...v0.0.18
 [v0.0.17]: https://github.com/koscakluka/ema-core/compare/v0.0.16...v0.0.17
 [v0.0.16]: https://github.com/koscakluka/ema-core/compare/v0.0.15...v0.0.16
