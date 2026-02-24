@@ -2,17 +2,14 @@ package orchestration
 
 import (
 	"context"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/koscakluka/ema-core/core/audio"
-	"github.com/koscakluka/ema-core/core/llms"
+	events "github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/speechtotext"
 )
 
-func TestSpeechToTextStartForwardsCallbacksAndInvokesEvents(t *testing.T) {
+func TestSpeechToTextStartEmitsEvents(t *testing.T) {
 	sttClient := &speechToTextClientStub{
 		transcribe: func(opts speechtotext.TranscriptionOptions) {
 			if opts.SpeechStartedCallback == nil {
@@ -45,46 +42,26 @@ func TestSpeechToTextStartForwardsCallbacksAndInvokesEvents(t *testing.T) {
 
 	runtime := newSpeechToText(sttClient)
 
-	var mu sync.Mutex
 	states := []bool{}
 	partialInterim := []string{}
 	interim := []string{}
 	partialTranscriptions := []string{}
 	transcriptions := []string{}
-	invokedEvents := atomic.Int32{}
-	invokedEventNames := []string{}
 
-	runtime.SetSpeechStateChangedCallback(func(isSpeaking bool) {
-		mu.Lock()
-		states = append(states, isSpeaking)
-		mu.Unlock()
-	})
-	runtime.SetInterimTranscriptionCallback(func(transcript string) {
-		mu.Lock()
-		interim = append(interim, transcript)
-		mu.Unlock()
-	})
-	runtime.SetPartialInterimTranscriptionCallback(func(transcript string) {
-		mu.Lock()
-		partialInterim = append(partialInterim, transcript)
-		mu.Unlock()
-	})
-	runtime.SetPartialTranscriptionCallback(func(transcript string) {
-		mu.Lock()
-		partialTranscriptions = append(partialTranscriptions, transcript)
-		mu.Unlock()
-	})
-	runtime.SetTranscriptionCallback(func(transcript string) {
-		mu.Lock()
-		transcriptions = append(transcriptions, transcript)
-		mu.Unlock()
-	})
-	runtime.SetInvokeTrigger(func(trigger llms.TriggerV0) {
-		if trigger != nil {
-			invokedEvents.Add(1)
-			mu.Lock()
-			invokedEventNames = append(invokedEventNames, trigger.String())
-			mu.Unlock()
+	runtime.SetEventEmitter(func(event events.Event) {
+		switch typedEvent := event.(type) {
+		case events.UserSpeechStarted:
+			states = append(states, true)
+		case events.UserSpeechEnded:
+			states = append(states, false)
+		case events.UserTranscriptInterimSegmentUpdated:
+			partialInterim = append(partialInterim, typedEvent.Segment)
+		case events.UserTranscriptInterimUpdated:
+			interim = append(interim, typedEvent.Transcript)
+		case events.UserTranscriptSegment:
+			partialTranscriptions = append(partialTranscriptions, typedEvent.Segment)
+		case events.UserTranscriptFinal:
+			transcriptions = append(transcriptions, typedEvent.Transcript)
 		}
 	})
 
@@ -92,14 +69,6 @@ func TestSpeechToTextStartForwardsCallbacksAndInvokesEvents(t *testing.T) {
 	if err := runtime.Start(context.Background(), &encodingInfo); err != nil {
 		t.Fatalf("expected start to succeed, got %v", err)
 	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for invokedEvents.Load() < 4 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if len(states) != 2 || !states[0] || states[1] {
 		t.Fatalf("expected speaking states [true false], got %v", states)
@@ -120,39 +89,41 @@ func TestSpeechToTextStartForwardsCallbacksAndInvokesEvents(t *testing.T) {
 	if len(transcriptions) != 1 || transcriptions[0] != "hello" {
 		t.Fatalf("expected transcription callback [\"hello\"], got %v", transcriptions)
 	}
-
-	if got := invokedEvents.Load(); got != 4 {
-		t.Fatalf("expected 4 invoked events, got %d (%v)", got, invokedEventNames)
-	}
 }
 
-func TestSpeechToTextIndividualSettersAcceptNilAndClearCallbacks(t *testing.T) {
+func TestSpeechToTextInvokeTranscriptionClearsInterimBeforeFinal(t *testing.T) {
 	runtime := newSpeechToText(nil)
-	invocations := atomic.Int32{}
 
-	runtime.SetSpeechStateChangedCallback(func(bool) { invocations.Add(1) })
-	runtime.SetInterimTranscriptionCallback(func(string) { invocations.Add(1) })
-	runtime.SetPartialInterimTranscriptionCallback(func(string) { invocations.Add(1) })
-	runtime.SetPartialTranscriptionCallback(func(string) { invocations.Add(1) })
-	runtime.SetTranscriptionCallback(func(string) { invocations.Add(1) })
-	runtime.SetInvokeTrigger(func(llms.TriggerV0) { invocations.Add(1) })
+	type observedEvent struct {
+		kind       events.Kind
+		transcript string
+	}
+	observed := []observedEvent{}
+	runtime.SetEventEmitter(func(event events.Event) {
+		switch typedEvent := event.(type) {
+		case events.UserTranscriptInterimSegmentUpdated:
+			observed = append(observed, observedEvent{kind: typedEvent.Kind(), transcript: typedEvent.Segment})
+		case events.UserTranscriptInterimUpdated:
+			observed = append(observed, observedEvent{kind: typedEvent.Kind(), transcript: typedEvent.Transcript})
+		case events.UserTranscriptFinal:
+			observed = append(observed, observedEvent{kind: typedEvent.Kind(), transcript: typedEvent.Transcript})
+		}
+	})
 
-	runtime.SetSpeechStateChangedCallback(nil)
-	runtime.SetInterimTranscriptionCallback(nil)
-	runtime.SetPartialInterimTranscriptionCallback(nil)
-	runtime.SetPartialTranscriptionCallback(nil)
-	runtime.SetTranscriptionCallback(nil)
-	runtime.SetInvokeTrigger(nil)
-
-	runtime.invokeSpeechStarted()
-	runtime.invokeSpeechEnded()
-	runtime.invokePartialInterimTranscription("partial")
-	runtime.invokeInterimTranscription("partial")
-	runtime.invokePartialTranscription("partial final")
 	runtime.invokeTranscription("final")
 
-	if got := invocations.Load(); got != 0 {
-		t.Fatalf("expected callbacks to be cleared, got %d invocations", got)
+	if len(observed) != 3 {
+		t.Fatalf("expected three events (partial interim clear, interim clear, transcription), got %d", len(observed))
+	}
+
+	if observed[0].kind != events.KindUserTranscriptInterimSegmentUpdated || observed[0].transcript != "" {
+		t.Fatalf("expected first event to clear partial interim transcription, got %+v", observed[0])
+	}
+	if observed[1].kind != events.KindUserTranscriptInterimUpdated || observed[1].transcript != "" {
+		t.Fatalf("expected second event to clear interim transcription, got %+v", observed[1])
+	}
+	if observed[2].kind != events.KindUserTranscriptFinal || observed[2].transcript != "final" {
+		t.Fatalf("expected third event to emit final transcription, got %+v", observed[2])
 	}
 }
 

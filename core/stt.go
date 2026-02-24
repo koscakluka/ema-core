@@ -5,34 +5,21 @@ import (
 	"fmt"
 
 	"github.com/koscakluka/ema-core/core/audio"
-	"github.com/koscakluka/ema-core/core/llms"
+	events "github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/speechtotext"
-	"github.com/koscakluka/ema-core/core/triggers"
 )
 
 type speechToText struct {
 	// client stores the configured speech-to-text implementation.
 	client SpeechToText
 
-	onSpeechStarted               func()
-	onSpeechEnded                 func()
-	onPartialInterimTranscription func(string)
-	onInterimTranscription        func(string)
-	onPartialTranscription        func(string)
-	onTranscription               func(string)
-	invokeTrigger                 func(llms.TriggerV0)
+	emitEvent eventEmitter
 }
 
 func newSpeechToText(client SpeechToText) *speechToText {
 	return &speechToText{
-		client:                        client,
-		onSpeechStarted:               func() {},
-		onSpeechEnded:                 func() {},
-		onPartialInterimTranscription: func(string) {},
-		onInterimTranscription:        func(string) {},
-		onPartialTranscription:        func(string) {},
-		onTranscription:               func(string) {},
-		invokeTrigger:                 func(llms.TriggerV0) {},
+		client:    client,
+		emitEvent: noopEventEmitter,
 	}
 }
 
@@ -103,64 +90,12 @@ func (s *speechToText) Close(ctx context.Context) error {
 	return nil
 }
 
-func (s *speechToText) SetSpeechStateChangedCallback(callback func(bool)) {
+func (s *speechToText) SetEventEmitter(emitEvent eventEmitter) {
 	if s != nil {
-		if callback != nil {
-			s.onSpeechStarted = func() { callback(true) }
-			s.onSpeechEnded = func() { callback(false) }
+		if emitEvent != nil {
+			s.emitEvent = emitEvent
 		} else {
-			s.onSpeechStarted = func() {}
-			s.onSpeechEnded = func() {}
-		}
-	}
-}
-
-func (s *speechToText) SetInterimTranscriptionCallback(callback func(string)) {
-	if s != nil {
-		if callback != nil {
-			s.onInterimTranscription = callback
-		} else {
-			s.onInterimTranscription = func(string) {}
-		}
-	}
-}
-
-func (s *speechToText) SetPartialInterimTranscriptionCallback(callback func(string)) {
-	if s != nil {
-		if callback != nil {
-			s.onPartialInterimTranscription = callback
-		} else {
-			s.onPartialInterimTranscription = func(string) {}
-		}
-	}
-}
-
-func (s *speechToText) SetPartialTranscriptionCallback(callback func(string)) {
-	if s != nil {
-		if callback != nil {
-			s.onPartialTranscription = callback
-		} else {
-			s.onPartialTranscription = func(string) {}
-		}
-	}
-}
-
-func (s *speechToText) SetTranscriptionCallback(callback func(string)) {
-	if s != nil {
-		if callback != nil {
-			s.onTranscription = callback
-		} else {
-			s.onTranscription = func(string) {}
-		}
-	}
-}
-
-func (s *speechToText) SetInvokeTrigger(invokeTrigger func(llms.TriggerV0)) {
-	if s != nil {
-		if invokeTrigger != nil {
-			s.invokeTrigger = invokeTrigger
-		} else {
-			s.invokeTrigger = func(llms.TriggerV0) {}
+			s.emitEvent = noopEventEmitter
 		}
 	}
 }
@@ -170,31 +105,27 @@ func (s *speechToText) isConfigured() bool {
 }
 
 func (s *speechToText) invokeSpeechStarted() {
-	s.onSpeechStarted()
-	go s.invokeTrigger(triggers.NewSpeechStartedTrigger())
+	s.emitEvent(events.NewUserSpeechStarted())
 }
 
 func (s *speechToText) invokeSpeechEnded() {
-	s.onSpeechEnded()
-	go s.invokeTrigger(triggers.NewSpeechEndedTrigger())
+	s.emitEvent(events.NewUserSpeechEnded())
 }
 
 func (s *speechToText) invokeInterimTranscription(transcript string) {
-	s.onInterimTranscription(transcript)
-	go s.invokeTrigger(triggers.NewInterimTranscriptionTrigger(transcript))
+	s.emitEvent(events.NewUserTranscriptInterimUpdated(transcript))
 }
 
 func (s *speechToText) invokePartialInterimTranscription(transcript string) {
-	s.onPartialInterimTranscription(transcript)
+	s.emitEvent(events.NewUserTranscriptInterimSegmentUpdated(transcript))
 }
 
 func (s *speechToText) invokePartialTranscription(transcript string) {
-	s.onPartialTranscription(transcript)
+	s.emitEvent(events.NewUserTranscriptSegment(transcript))
 }
 
 func (s *speechToText) invokeTranscription(transcript string) {
-	s.onPartialInterimTranscription("")
-	s.onInterimTranscription("")
-	s.onTranscription(transcript)
-	go s.invokeTrigger(triggers.NewTranscriptionTrigger(transcript))
+	s.emitEvent(events.NewUserTranscriptInterimSegmentUpdated(""))
+	s.emitEvent(events.NewUserTranscriptInterimUpdated(""))
+	s.emitEvent(events.NewUserTranscriptFinal(transcript))
 }

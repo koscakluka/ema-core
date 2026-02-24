@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	events "github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -25,20 +26,26 @@ type responsePipeline struct {
 	speechPlayer *speechPlayer
 	audioOutput  *audioOutput
 
-	onCancel func()
+	emitEvent eventEmitter
 
 	cancelled atomic.Bool
 }
 
-func newResponsePipeline(llm llm, textToSpeech *textToSpeech, speechPlayer *speechPlayer, audioOutput *audioOutput, onCancel func()) *responsePipeline {
+func newResponsePipeline(
+	llm llm,
+	textToSpeech *textToSpeech,
+	speechPlayer *speechPlayer,
+	audioOutput *audioOutput,
+	emitEvent eventEmitter,
+) *responsePipeline {
 	speechPlayerSegmentationBoundaries := ""
 	if audioOutput.supportsCallbackMarks {
 		speechPlayerSegmentationBoundaries = defaultSpeechPlayerSegmentationBoundaries
 	}
 	speechPlayer.InitBuffers(audioOutput.EncodingInfo(), speechPlayerSegmentationBoundaries)
 
-	if onCancel == nil {
-		onCancel = func() {}
+	if emitEvent == nil {
+		emitEvent = noopEventEmitter
 	}
 
 	return &responsePipeline{
@@ -47,7 +54,7 @@ func newResponsePipeline(llm llm, textToSpeech *textToSpeech, speechPlayer *spee
 		audioOutput:  audioOutput,
 		speechPlayer: speechPlayer,
 
-		onCancel: onCancel,
+		emitEvent: emitEvent,
 	}
 }
 
@@ -154,7 +161,8 @@ func (processor *responsePipeline) processResponseText(
 	_, span := tracer.Start(ctx, "passing text to tts")
 	defer span.End()
 
-	if err := processor.textToSpeech.init(ctx, processor.speechPlayer, processor.audioOutput.EncodingInfo()); err != nil {
+	processor.textToSpeech.SetEventEmitter(processor.composeTTSEventEmitter())
+	if err := processor.textToSpeech.init(ctx, processor.audioOutput.EncodingInfo()); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -188,6 +196,21 @@ textLoop:
 	return nil
 }
 
+func (processor *responsePipeline) composeTTSEventEmitter() eventEmitter {
+	return func(event events.Event) {
+		switch typedEvent := event.(type) {
+		case events.AssistantSpeechFrame:
+			processor.speechPlayer.AddAudioChunk(typedEvent.Audio)
+		case events.AssistantSpeechMarkGenerated:
+			processor.speechPlayer.AddAudioMark(typedEvent.Transcript)
+		case events.AssistantSpeechFinal:
+			processor.speechPlayer.AllAudioLoaded()
+		}
+
+		processor.emitEvent(event)
+	}
+}
+
 func (processor *responsePipeline) processSpeech(
 	ctx context.Context,
 	turn *activeTurn,
@@ -197,6 +220,10 @@ func (processor *responsePipeline) processSpeech(
 
 	if ok := processor.textToSpeech.waitUntilInitialized(ctx); !ok {
 		return nil
+	}
+
+	if processor.textToSpeech.IsLegacyMode() {
+		processor.speechPlayer.EnableLegacyTTSMode()
 	}
 
 	_, span := tracer.Start(ctx, "passing speech to audio output")
@@ -258,7 +285,7 @@ func (p *responsePipeline) Cancel() {
 		p.textToSpeech.Cancel()
 		p.speechPlayer.StopAudio()
 		p.audioOutput.Clear()
-		p.onCancel()
+		p.emitEvent(events.NewTurnCancelled())
 	}
 }
 

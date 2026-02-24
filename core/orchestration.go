@@ -9,6 +9,7 @@ import (
 
 	"log"
 
+	events "github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
 	"github.com/koscakluka/ema-core/core/triggers"
 	"github.com/koscakluka/ema-core/internal/utils"
@@ -144,21 +145,17 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 	for _, opt := range opts {
 		opt(&orchestrateOptions)
 	}
+	emitEvent := newCallbackEventEmitter(orchestrateOptions)
 
 	o.baseContext = ctx
-	o.llm.setResponseCallbacks(orchestrateOptions.onResponse, orchestrateOptions.onResponseEnd)
-	o.textToSpeech.SetCallbacks(orchestrateOptions.onAudio)
-	o.speechPlayer.SetCallbacks(orchestrateOptions.onAudioEnded)
-	o.speechPlayer.SetSpokenTextCallback(orchestrateOptions.onSpokenText)
-	o.speechPlayer.SetSpokenTextDeltaCallback(orchestrateOptions.onSpokenTextDelta)
-	o.speechToText.SetSpeechStateChangedCallback(orchestrateOptions.onSpeakingStateChanged)
-	o.speechToText.SetPartialInterimTranscriptionCallback(orchestrateOptions.onPartialInterimTranscription)
-	o.speechToText.SetInterimTranscriptionCallback(orchestrateOptions.onInterimTranscription)
-	o.speechToText.SetPartialTranscriptionCallback(orchestrateOptions.onPartialTranscription)
-	o.speechToText.SetTranscriptionCallback(orchestrateOptions.onTranscription)
+	o.llm.SetEventEmitter(emitEvent)
+	o.textToSpeech.SetEventEmitter(emitEvent)
+	o.speechPlayer.SetEventEmitter(emitEvent)
+	o.speechToText.SetEventEmitter(o.composeSTTEventEmitter(emitEvent))
+	o.audioInput.SetEventEmitter(o.composeAudioInputEventEmitter(emitEvent))
 	if started := o.triggerPlayer.StartLoop(o.baseContext, func(ctx context.Context, trigger llms.TriggerV0) error {
 		pipeline := newResponsePipeline(o.llm.snapshot(), o.textToSpeech.Snapshot(), o.speechPlayer.Snapshot(), o.audioOutput.Snapshot(),
-			o.triggerPlayer.OnCancel,
+			emitEvent,
 		)
 		if !o.responsePipeline.CompareAndSwap(nil, pipeline) {
 			return fmt.Errorf("active turn already in progress")
@@ -205,13 +202,44 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 		span.SetStatus(codes.Error, recordedErr.Error())
 	}
 
-	o.audioInput.Start(o.baseContext, func(audio []byte) {
-		if orchestrateOptions.onInputAudio != nil {
-			orchestrateOptions.onInputAudio(audio)
-		}
+	o.audioInput.Start(o.baseContext)
+}
 
-		o.speechToText.SendAudio(audio)
-	})
+func (o *Orchestrator) composeSTTEventEmitter(emitEvent eventEmitter) eventEmitter {
+	if emitEvent == nil {
+		emitEvent = noopEventEmitter
+	}
+
+	return func(event events.Event) {
+		emitEvent(event)
+
+		switch typedEvent := event.(type) {
+		case events.UserSpeechStarted:
+			go o.ingestTrigger(triggers.NewSpeechStartedTrigger())
+		case events.UserSpeechEnded:
+			go o.ingestTrigger(triggers.NewSpeechEndedTrigger())
+		case events.UserTranscriptInterimUpdated:
+			if typedEvent.Transcript != "" {
+				go o.ingestTrigger(triggers.NewInterimTranscriptionTrigger(typedEvent.Transcript))
+			}
+		case events.UserTranscriptFinal:
+			go o.ingestTrigger(triggers.NewTranscriptionTrigger(typedEvent.Transcript))
+		}
+	}
+}
+
+func (o *Orchestrator) composeAudioInputEventEmitter(emitEvent eventEmitter) eventEmitter {
+	if emitEvent == nil {
+		emitEvent = noopEventEmitter
+	}
+
+	return func(event events.Event) {
+		emitEvent(event)
+
+		if inputAudio, ok := event.(events.UserAudioFrame); ok {
+			o.speechToText.SendAudio(inputAudio.Audio)
+		}
+	}
 }
 
 // ConversationV1 returns a point-in-time snapshot of conversation state.

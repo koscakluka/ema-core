@@ -8,6 +8,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** renamed orchestration event taxonomy to receiver-facing groups and
+  kinds (`user_input.*`, `assistant_response.*`, `assistant_speech.*`,
+  `assistant_playback.*`, `turn_state.*`), including event types and
+  constructors in `core/events`
+- speaking-state events are now split into explicit
+  `UserSpeechStarted`/`UserSpeechEnded` events
+
 ## [v0.0.18] - 2026-02-23
 
 ### Added

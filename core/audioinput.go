@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/koscakluka/ema-core/core/audio"
+	events "github.com/koscakluka/ema-core/core/events"
 )
 
 type audioInput struct {
@@ -26,18 +27,14 @@ type audioInput struct {
 	// shouldCapture reports whether the input client should be capturing audio.
 	shouldCapture atomic.Bool
 
-	// onInputAudio is called when input audio is received
-	onInputAudio func(audio []byte)
+	emitEvent eventEmitter
 }
 
 // newAudioInput creates an audioInput wrapper around the provided client.
 //
-// If no callback is provided, a no-op callback is used so callers do not need
-// to guard against nil. Capture defaults to always-on mode.
+// Capture defaults to always-on mode.
 func newAudioInput(client audioInputBase) *audioInput {
-	onInputAudio := func(audio []byte) {}
-
-	audioInput := audioInput{onInputAudio: onInputAudio}
+	audioInput := audioInput{emitEvent: noopEventEmitter}
 	audioInput.alwaysCapture.Store(true)
 	audioInput.Set(client)
 	return &audioInput
@@ -114,16 +111,22 @@ func (a *audioInput) ReleaseCapture(context.Context) error {
 	return a.StopCapture()
 }
 
-// Start initializes capture when a client is configured.
-func (a *audioInput) Start(ctx context.Context, onInputAudio func(audio []byte)) {
-	if a.IsCapturing() {
+func (a *audioInput) SetEventEmitter(emitEvent eventEmitter) {
+	if a == nil {
 		return
 	}
 
-	// TODO: This is a swipe-outable option so it should be set instead of
-	// passed in start
-	if onInputAudio != nil {
-		a.onInputAudio = onInputAudio
+	if emitEvent != nil {
+		a.emitEvent = emitEvent
+	} else {
+		a.emitEvent = noopEventEmitter
+	}
+}
+
+// Start initializes capture when a client is configured.
+func (a *audioInput) Start(ctx context.Context) {
+	if a.IsCapturing() {
+		return
 	}
 
 	if a.IsConfigured() {
@@ -231,7 +234,12 @@ func (a *audioInput) onAudio(audio []byte) {
 		return
 	}
 
-	a.onInputAudio(audio)
+	emitEvent := a.emitEvent
+	if emitEvent == nil {
+		emitEvent = noopEventEmitter
+	}
+
+	emitEvent(events.NewUserAudioFrame(audio))
 }
 
 func isNilAudioInputBase(client audioInputBase) bool {

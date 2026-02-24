@@ -7,6 +7,7 @@ import (
 
 	"log"
 
+	events "github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -18,18 +19,10 @@ type llm struct {
 	// tools stores the effective tool list exposed to model calls.
 	tools []llms.Tool
 
-	// onResponse is called for each streamed response chunk.
-	onResponse func(string)
-	// onResponseEnd is called once response streaming is finished.
-	onResponseEnd func()
+	emitEvent eventEmitter
 }
 
-func newLLM() llm {
-	return llm{
-		onResponse:    func(string) {},
-		onResponseEnd: func() {},
-	}
-}
+func newLLM() llm { return llm{emitEvent: noopEventEmitter} }
 
 func (runtime *llm) set(client LLM) {
 	if runtime == nil {
@@ -55,17 +48,17 @@ func (runtime *llm) appendTools(tools ...llms.Tool) {
 	runtime.tools = append(runtime.tools, tools...)
 }
 
-func (runtime *llm) setResponseCallbacks(onResponse func(string), onResponseEnd func()) {
+func (runtime *llm) SetEventEmitter(emitEvent eventEmitter) {
 	if runtime == nil {
 		return
 	}
 
-	if onResponse != nil {
-		runtime.onResponse = onResponse
+	if emitEvent == nil {
+		runtime.emitEvent = noopEventEmitter
+		return
 	}
-	if onResponseEnd != nil {
-		runtime.onResponseEnd = onResponseEnd
-	}
+
+	runtime.emitEvent = emitEvent
 }
 
 func (runtime *llm) availableTools() []llms.Tool {
@@ -88,7 +81,7 @@ func (runtime *llm) snapshot() llm {
 		snapshot.tools = make([]llms.Tool, len(runtime.tools))
 		copy(snapshot.tools, runtime.tools)
 	}
-	snapshot.setResponseCallbacks(runtime.onResponse, runtime.onResponseEnd)
+	snapshot.SetEventEmitter(runtime.emitEvent)
 
 	return snapshot
 }
@@ -100,9 +93,13 @@ func (runtime *llm) generate(
 	onChunk func(string),
 	activeTurnCancelled func() bool,
 ) (*llms.Response, error) {
-	defer runtime.onResponseEnd()
+	if runtime == nil {
+		return nil, nil
+	}
 
-	if runtime == nil || runtime.client == nil {
+	defer runtime.emitEvent(events.NewAssistantResponseFinal())
+
+	if runtime.client == nil {
 		return nil, nil
 	}
 
@@ -131,7 +128,7 @@ func (runtime *llm) processPrompt(ctx context.Context,
 			if onChunk != nil {
 				onChunk(chunk)
 			}
-			runtime.onResponse(chunk)
+			runtime.emitEvent(events.NewAssistantResponseSegment(chunk))
 		}),
 	)
 	if err != nil {
@@ -191,7 +188,7 @@ func (runtime *llm) processStreaming(ctx context.Context,
 				if onChunk != nil {
 					onChunk(chunk.Content())
 				}
-				runtime.onResponse(chunk.Content())
+				runtime.emitEvent(events.NewAssistantResponseSegment(chunk.Content()))
 
 			case llms.StreamToolCallChunk:
 				toolCalls = append(toolCalls, chunk.(llms.StreamToolCallChunk).ToolCall())

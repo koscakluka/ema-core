@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/koscakluka/ema-core/core/audio"
+	events "github.com/koscakluka/ema-core/core/events"
 )
 
 const minSpokenTextUpdateInterval = 10 * time.Millisecond
@@ -14,26 +15,22 @@ const maxSpokenTextUpdateInterval = 250 * time.Millisecond
 type speechPlayer struct {
 	mu sync.RWMutex
 
-	onAudioEnded      func(string)
-	onSpokenText      func(string)
-	onSpokenTextDelta func(string)
-	textBuffer        *textBuffer
-	audioBuffer       *audioBuffer
-	text              []string
-	playedMarks       int
+	textBuffer  *textBuffer
+	audioBuffer *audioBuffer
+	text        []string
+	playedMarks int
 
 	lastEmittedSpokenText string
 	hasEmittedSpokenText  bool
 
 	segmentationBoundaries string
+	emitEvent              eventEmitter
 }
 
 func newSpeechPlayer() *speechPlayer {
 	return &speechPlayer{
-		onAudioEnded:      func(string) {},
-		onSpokenText:      func(string) {},
-		onSpokenTextDelta: func(string) {},
-		textBuffer:        newTextBuffer(),
+		textBuffer: newTextBuffer(),
+		emitEvent:  noopEventEmitter,
 	}
 }
 
@@ -277,43 +274,23 @@ func (p *speechPlayer) Snapshot() *speechPlayer {
 		return p
 	}
 
-	p.mu.RLock()
-	onAudioEnded := p.onAudioEnded
-	onSpokenText := p.onSpokenText
-	onSpokenTextDelta := p.onSpokenTextDelta
-	p.mu.RUnlock()
-
 	snapshot := newSpeechPlayer()
-	snapshot.SetCallbacks(onAudioEnded)
-	snapshot.SetSpokenTextCallback(onSpokenText)
-	snapshot.SetSpokenTextDeltaCallback(onSpokenTextDelta)
+	snapshot.SetEventEmitter(p.emitEvent)
 	return snapshot
 }
 
-func (p *speechPlayer) SetCallbacks(onAudioEnded func(string)) {
-	if onAudioEnded != nil {
-		p.lockFor(func() { p.onAudioEnded = onAudioEnded })
+func (p *speechPlayer) SetEventEmitter(emitEvent eventEmitter) {
+	if p == nil {
+		return
 	}
-}
 
-func (p *speechPlayer) SetSpokenTextCallback(onSpokenText func(string)) {
-	if onSpokenText != nil {
-		p.lockFor(func() {
-			p.onSpokenText = onSpokenText
-			p.hasEmittedSpokenText = false
-			p.lastEmittedSpokenText = ""
-		})
-	}
-}
-
-func (p *speechPlayer) SetSpokenTextDeltaCallback(onSpokenTextDelta func(string)) {
-	if onSpokenTextDelta != nil {
-		p.lockFor(func() {
-			p.onSpokenTextDelta = onSpokenTextDelta
-			p.hasEmittedSpokenText = false
-			p.lastEmittedSpokenText = ""
-		})
-	}
+	p.lockFor(func() {
+		if emitEvent == nil {
+			p.emitEvent = noopEventEmitter
+			return
+		}
+		p.emitEvent = emitEvent
+	})
 }
 
 func (p *speechPlayer) ConfirmMark() {
@@ -400,8 +377,6 @@ func (p *speechPlayer) EmitApproximateSpokenText(currentSegmentProgress float64)
 	spokenText := p.ApproximateSpokenTextSoFar(currentSegmentProgress)
 
 	p.mu.Lock()
-	onSpokenText := p.onSpokenText
-	onSpokenTextDelta := p.onSpokenTextDelta
 	previousSpokenText := p.lastEmittedSpokenText
 	hasPreviousEmission := p.hasEmittedSpokenText
 	if p.hasEmittedSpokenText && spokenText == p.lastEmittedSpokenText {
@@ -412,25 +387,18 @@ func (p *speechPlayer) EmitApproximateSpokenText(currentSegmentProgress float64)
 	p.hasEmittedSpokenText = true
 	p.mu.Unlock()
 
-	if onSpokenText != nil {
-		onSpokenText(spokenText)
+	p.emitEvent(events.NewAssistantPlaybackTranscriptUpdated(spokenText))
+
+	segment := spokenText
+	if hasPreviousEmission && strings.HasPrefix(spokenText, previousSpokenText) {
+		segment = spokenText[len(previousSpokenText):]
 	}
 
-	if onSpokenTextDelta != nil {
-		delta := spokenText
-		if hasPreviousEmission && strings.HasPrefix(spokenText, previousSpokenText) {
-			delta = spokenText[len(previousSpokenText):]
-		}
-		onSpokenTextDelta(delta)
-	}
+	p.emitEvent(events.NewAssistantPlaybackTranscriptSegment(segment))
 }
 
 func (p *speechPlayer) OnAudioEnded(transcript string) {
-	var onAudioEnded func(string)
-	p.rLockFor(func() { onAudioEnded = p.onAudioEnded })
-	if onAudioEnded != nil {
-		onAudioEnded(transcript)
-	}
+	p.emitEvent(events.NewAssistantPlaybackEnded(transcript))
 }
 
 func (p *speechPlayer) lockFor(f func()) {

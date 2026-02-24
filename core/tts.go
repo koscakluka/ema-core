@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/koscakluka/ema-core/core/audio"
+	events "github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/texttospeech"
 )
 
@@ -36,15 +37,16 @@ type textToSpeech struct {
 	// isMuted indicates whether the TTS client is currently passing speech to
 	// audio output.
 	isMuted atomic.Bool
+	// legacyMode indicates whether this turn is using the legacy streaming TTS API.
+	legacyMode atomic.Bool
 
-	// onAudio is called when a speech chunk is forwarded to output processing.
-	onAudio func([]byte)
+	emitEvent eventEmitter
 }
 
 func newTextToSpeech(client textToSpeechBase, isMuted bool) *textToSpeech {
 	textToSpeech := textToSpeech{
 		initialized: make(chan struct{}),
-		onAudio:     func([]byte) {},
+		emitEvent:   noopEventEmitter,
 	}
 	textToSpeech.isMuted.Store(isMuted)
 	textToSpeech.set(client)
@@ -64,21 +66,24 @@ func (t *textToSpeech) Snapshot() *textToSpeech {
 	}
 
 	snapshot := newTextToSpeech(t.base, t.isMuted.Load())
-	snapshot.SetCallbacks(t.onAudio)
+	snapshot.SetEventEmitter(t.emitEvent)
 	return snapshot
 }
 
-func (t *textToSpeech) SetCallbacks(onAudio func([]byte)) {
+func (t *textToSpeech) SetEventEmitter(emitEvent eventEmitter) {
 	if t == nil {
 		return
 	}
 
-	if onAudio != nil {
-		t.onAudio = onAudio
+	if emitEvent == nil {
+		t.emitEvent = noopEventEmitter
+		return
 	}
+
+	t.emitEvent = emitEvent
 }
 
-func (t *textToSpeech) init(ctx context.Context, speechPlayer *speechPlayer, encodingInfo audio.EncodingInfo) error {
+func (t *textToSpeech) init(ctx context.Context, encodingInfo audio.EncodingInfo) error {
 	if t == nil {
 		return nil
 	}
@@ -86,23 +91,30 @@ func (t *textToSpeech) init(ctx context.Context, speechPlayer *speechPlayer, enc
 	t.initOnce.Do(func() {
 		defer close(t.initialized)
 		t.connected.Store(false)
+		t.legacyMode.Store(false)
 		if t.closeStarted.Load() {
 			return
 		}
 
+		emitEvent := t.emitEvent
+		if emitEvent == nil {
+			emitEvent = noopEventEmitter
+		}
+
 		ttsOptions := []texttospeech.TextToSpeechOption{
 			texttospeech.WithSpeechAudioCallback(func(audio []byte) {
-				speechPlayer.AddAudioChunk(audio)
-				t.onAudio(audio)
+				emitEvent(events.NewAssistantSpeechFrame(audio))
 			}),
-			texttospeech.WithSpeechMarkCallback(speechPlayer.AddAudioMark),
+			texttospeech.WithSpeechMarkCallback(func(transcript string) {
+				emitEvent(events.NewAssistantSpeechMarkGenerated(transcript))
+			}),
 			texttospeech.WithEncodingInfo(encodingInfo),
 		}
 
 		if t.base != nil {
 			if client, ok := t.base.(TextToSpeechV1); ok {
 				ttsOptions = append(ttsOptions, texttospeech.WithSpeechEndedCallbackV0(func(texttospeech.SpeechEndedReport) {
-					speechPlayer.AllAudioLoaded()
+					emitEvent(events.NewAssistantSpeechFinal())
 				}))
 
 				speechGenerator, err := client.NewSpeechGeneratorV0(ctx, ttsOptions...)
@@ -148,7 +160,7 @@ func (t *textToSpeech) init(ctx context.Context, speechPlayer *speechPlayer, enc
 				t.ttsClient = client
 				t.clientMu.Unlock()
 				t.connected.Store(true)
-				speechPlayer.EnableLegacyTTSMode()
+				t.legacyMode.Store(true)
 			}
 		}
 	})
@@ -328,6 +340,8 @@ func (t *textToSpeech) Cancel() error {
 }
 
 func (t *textToSpeech) IsMuted() bool { return t != nil && t.isMuted.Load() }
+
+func (t *textToSpeech) IsLegacyMode() bool { return t != nil && t.legacyMode.Load() }
 
 func (t *textToSpeech) Mute() error {
 	if t != nil {

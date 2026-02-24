@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/koscakluka/ema-core/core/audio"
+	events "github.com/koscakluka/ema-core/core/events"
 )
 
 func setTextSegments(player *speechPlayer, segments ...string) {
@@ -101,14 +102,16 @@ func TestSpeechPlayerApproximateSpokenTextSoFarClampsProgress(t *testing.T) {
 	}
 }
 
-func TestSpeechPlayerEmitApproximateSpokenTextCallsCallback(t *testing.T) {
+func TestSpeechPlayerEmitApproximateSpokenTextEmitsEvent(t *testing.T) {
 	player := newSpeechPlayer()
 
 	setTextSegments(player, "Hello", " world")
 
 	updates := []string{}
-	player.SetSpokenTextCallback(func(spokenText string) {
-		updates = append(updates, spokenText)
+	player.SetEventEmitter(func(event events.Event) {
+		if spokenText, ok := event.(events.AssistantPlaybackTranscriptUpdated); ok {
+			updates = append(updates, spokenText.Transcript)
+		}
 	})
 
 	player.EmitApproximateSpokenText(0.5)
@@ -132,8 +135,10 @@ func TestSpeechPlayerEmitApproximateSpokenTextSkipsUnchangedValues(t *testing.T)
 	setTextSegments(player, "Hello")
 
 	updates := []string{}
-	player.SetSpokenTextCallback(func(spokenText string) {
-		updates = append(updates, spokenText)
+	player.SetEventEmitter(func(event events.Event) {
+		if spokenText, ok := event.(events.AssistantPlaybackTranscriptUpdated); ok {
+			updates = append(updates, spokenText.Transcript)
+		}
 	})
 
 	player.EmitApproximateSpokenText(0.5)
@@ -154,8 +159,10 @@ func TestSpeechPlayerEmitApproximateSpokenTextDeltaReportsIncrementalChange(t *t
 	setTextSegments(player, "Hello")
 
 	deltas := []string{}
-	player.SetSpokenTextDeltaCallback(func(spokenTextDelta string) {
-		deltas = append(deltas, spokenTextDelta)
+	player.SetEventEmitter(func(event events.Event) {
+		if spokenTextDelta, ok := event.(events.AssistantPlaybackTranscriptSegment); ok {
+			deltas = append(deltas, spokenTextDelta.Segment)
+		}
 	})
 
 	player.EmitApproximateSpokenText(0.2)
@@ -178,8 +185,10 @@ func TestSpeechPlayerEmitApproximateSpokenTextDeltaFallsBackToReplacement(t *tes
 	setTextSegments(player, "Hello")
 
 	deltas := []string{}
-	player.SetSpokenTextDeltaCallback(func(spokenTextDelta string) {
-		deltas = append(deltas, spokenTextDelta)
+	player.SetEventEmitter(func(event events.Event) {
+		if spokenTextDelta, ok := event.(events.AssistantPlaybackTranscriptSegment); ok {
+			deltas = append(deltas, spokenTextDelta.Segment)
+		}
 	})
 
 	player.EmitApproximateSpokenText(1)
@@ -196,38 +205,39 @@ func TestSpeechPlayerEmitApproximateSpokenTextDeltaFallsBackToReplacement(t *tes
 	}
 }
 
-func TestSpeechPlayerOnAudioEndedFallsBackToProvidedTranscript(t *testing.T) {
+func TestSpeechPlayerOnAudioEndedEmitsProvidedTranscript(t *testing.T) {
 	player := newSpeechPlayer()
 
-	called := ""
-	player.SetCallbacks(func(transcript string) {
-		called = transcript
+	transcripts := []string{}
+	player.SetEventEmitter(func(event events.Event) {
+		if audioEnded, ok := event.(events.AssistantPlaybackEnded); ok {
+			transcripts = append(transcripts, audioEnded.Transcript)
+		}
 	})
 
 	player.OnAudioEnded("full generated transcript")
 
-	if called != "full generated transcript" {
-		t.Fatalf("expected fallback transcript %q, got %q", "full generated transcript", called)
+	if len(transcripts) != 1 || transcripts[0] != "full generated transcript" {
+		t.Fatalf("expected one audio-ended transcript %q, got %v", "full generated transcript", transcripts)
 	}
 }
 
-func TestSpeechPlayerSnapshotKeepsCallbacksButNotMarkedText(t *testing.T) {
+func TestSpeechPlayerSnapshotKeepsEmitterButNotMarkedText(t *testing.T) {
 	player := newSpeechPlayer()
 	setTextSegments(player, "already queued")
 
-	called := ""
-	player.SetCallbacks(func(transcript string) {
-		called = transcript
-	})
-
-	spokenCalled := ""
-	player.SetSpokenTextCallback(func(spokenText string) {
-		spokenCalled = spokenText
-	})
-
-	spokenDeltaCalled := ""
-	player.SetSpokenTextDeltaCallback(func(spokenTextDelta string) {
-		spokenDeltaCalled = spokenTextDelta
+	audioEnded := []string{}
+	spoken := []string{}
+	spokenDeltas := []string{}
+	player.SetEventEmitter(func(event events.Event) {
+		switch typedEvent := event.(type) {
+		case events.AssistantPlaybackEnded:
+			audioEnded = append(audioEnded, typedEvent.Transcript)
+		case events.AssistantPlaybackTranscriptUpdated:
+			spoken = append(spoken, typedEvent.Transcript)
+		case events.AssistantPlaybackTranscriptSegment:
+			spokenDeltas = append(spokenDeltas, typedEvent.Segment)
+		}
 	})
 
 	snapshot := player.Snapshot()
@@ -236,17 +246,17 @@ func TestSpeechPlayerSnapshotKeepsCallbacksButNotMarkedText(t *testing.T) {
 	}
 
 	snapshot.OnAudioEnded("new turn transcript")
-	if called != "new turn transcript" {
-		t.Fatalf("expected snapshot callback transcript %q, got %q", "new turn transcript", called)
+	if len(audioEnded) != 1 || audioEnded[0] != "new turn transcript" {
+		t.Fatalf("expected snapshot audio-ended transcript %q, got %v", "new turn transcript", audioEnded)
 	}
 
 	setTextSegments(snapshot, "Hello")
 	snapshot.EmitApproximateSpokenText(1)
-	if spokenCalled != "Hello" {
-		t.Fatalf("expected snapshot spoken-text callback %q, got %q", "Hello", spokenCalled)
+	if len(spoken) != 1 || spoken[0] != "Hello" {
+		t.Fatalf("expected snapshot spoken-text event %q, got %v", "Hello", spoken)
 	}
-	if spokenDeltaCalled != "Hello" {
-		t.Fatalf("expected snapshot spoken-text delta callback %q, got %q", "Hello", spokenDeltaCalled)
+	if len(spokenDeltas) != 1 || spokenDeltas[0] != "Hello" {
+		t.Fatalf("expected snapshot spoken-text delta event %q, got %v", "Hello", spokenDeltas)
 	}
 }
 
@@ -321,8 +331,10 @@ func TestSpeechPlayerOnAudioOutputMarkPlayedCombinesConfirmationAndEmission(t *t
 	setTextSegments(player, "Hello", " world")
 
 	updates := []string{}
-	player.SetSpokenTextCallback(func(spokenText string) {
-		updates = append(updates, spokenText)
+	player.SetEventEmitter(func(event events.Event) {
+		if spokenText, ok := event.(events.AssistantPlaybackTranscriptUpdated); ok {
+			updates = append(updates, spokenText.Transcript)
+		}
 	})
 
 	player.AddAudioChunk([]byte{1, 2, 3})
@@ -360,8 +372,10 @@ func TestSpeechPlayerOnAudioOutputMarkPlayedIgnoresUnknownOrDuplicateMarks(t *te
 	setTextSegments(player, "Hello", " world")
 
 	updates := []string{}
-	player.SetSpokenTextCallback(func(spokenText string) {
-		updates = append(updates, spokenText)
+	player.SetEventEmitter(func(event events.Event) {
+		if spokenText, ok := event.(events.AssistantPlaybackTranscriptUpdated); ok {
+			updates = append(updates, spokenText.Transcript)
+		}
 	})
 
 	player.AddAudioChunk([]byte{1, 2, 3})
