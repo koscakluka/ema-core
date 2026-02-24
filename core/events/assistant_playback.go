@@ -1,6 +1,12 @@
 package events
 
 const (
+	// KindAssistantPlaybackStarted identifies playback start for the current response.
+	KindAssistantPlaybackStarted Kind = "assistant_playback.started"
+	// KindAssistantPlaybackFrame identifies an approximated playback audio delta frame.
+	KindAssistantPlaybackFrame Kind = "assistant_playback.frame"
+	// KindAssistantPlaybackMarkPlayed identifies confirmation that an output mark was played.
+	KindAssistantPlaybackMarkPlayed Kind = "assistant_playback.mark_played"
 	// KindAssistantPlaybackTranscriptUpdated identifies mutable playback transcript snapshots.
 	KindAssistantPlaybackTranscriptUpdated Kind = "assistant_playback.transcript_updated"
 	// KindAssistantPlaybackTranscriptSegment identifies append-only playback transcript segments.
@@ -8,6 +14,37 @@ const (
 	// KindAssistantPlaybackEnded identifies the playback completion milestone.
 	KindAssistantPlaybackEnded Kind = "assistant_playback.ended"
 )
+
+// AssistantPlaybackStarted marks the start of assistant playback.
+type AssistantPlaybackStarted struct{ Base }
+
+// NewAssistantPlaybackStarted creates an assistant playback started event.
+func NewAssistantPlaybackStarted() AssistantPlaybackStarted {
+	return AssistantPlaybackStarted{Base: NewBase(KindAssistantPlaybackStarted)}
+}
+
+// AssistantPlaybackFrame carries an approximated append-only playback audio delta.
+type AssistantPlaybackFrame struct {
+	Base
+	Audio []byte
+}
+
+// NewAssistantPlaybackFrame creates an assistant playback frame event.
+func NewAssistantPlaybackFrame(audio []byte) AssistantPlaybackFrame {
+	return AssistantPlaybackFrame{Base: NewBase(KindAssistantPlaybackFrame), Audio: audio}
+}
+
+// AssistantPlaybackMarkPlayed marks confirmation that a playback mark was played.
+type AssistantPlaybackMarkPlayed struct {
+	Base
+	Mark       string
+	Transcript string
+}
+
+// NewAssistantPlaybackMarkPlayed creates an assistant playback mark played event.
+func NewAssistantPlaybackMarkPlayed(mark, transcript string) AssistantPlaybackMarkPlayed {
+	return AssistantPlaybackMarkPlayed{Base: NewBase(KindAssistantPlaybackMarkPlayed), Mark: mark, Transcript: transcript}
+}
 
 // AssistantPlaybackTranscriptUpdated carries the current playback transcript snapshot.
 type AssistantPlaybackTranscriptUpdated struct {

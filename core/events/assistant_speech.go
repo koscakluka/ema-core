@@ -21,6 +21,9 @@ func NewAssistantSpeechFrame(audio []byte) AssistantSpeechFrame {
 }
 
 // AssistantSpeechMarkGenerated carries transcript text attached to a generated TTS mark.
+//
+// In legacy TTS mode, an empty transcript may be used as a terminal
+// end-of-stream mark.
 type AssistantSpeechMarkGenerated struct {
 	Base
 	Transcript string
