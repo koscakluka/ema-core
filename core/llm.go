@@ -103,12 +103,28 @@ func (runtime *llm) generate(
 		return nil, nil
 	}
 
+	runtime.emitEvent(events.NewAssistantResponseStarted())
+
 	switch client := runtime.client.(type) {
 	case LLMWithStream:
-		return runtime.processStreaming(ctx, client, trigger, conversation, onChunk, activeTurnCancelled)
+		response, err := runtime.processStreaming(ctx, client, trigger, conversation, onChunk, activeTurnCancelled)
+		if err != nil {
+			return nil, err
+		}
+		if response != nil {
+			runtime.emitEvent(events.NewAssistantResponseFinalized(response.Content))
+		}
+		return response, nil
 
 	case LLMWithPrompt:
-		return runtime.processPrompt(ctx, client, trigger, conversation, onChunk)
+		response, err := runtime.processPrompt(ctx, client, trigger, conversation, onChunk)
+		if err != nil {
+			return nil, err
+		}
+		if response != nil {
+			runtime.emitEvent(events.NewAssistantResponseFinalized(response.Content))
+		}
+		return response, nil
 
 	default:
 		return nil, fmt.Errorf("unknown LLM type")

@@ -154,6 +154,9 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 	o.speechToText.SetEventEmitter(o.composeSTTEventEmitter(emitEvent))
 	o.audioInput.SetEventEmitter(o.composeAudioInputEventEmitter(emitEvent))
 	if started := o.triggerPlayer.StartLoop(o.baseContext, func(ctx context.Context, trigger llms.TriggerV0) error {
+		var turnErr error
+		var activeTurn *activeTurn
+
 		pipeline := newResponsePipeline(o.llm.snapshot(), o.textToSpeech.Snapshot(), o.speechPlayer.Snapshot(), o.audioOutput.Snapshot(),
 			emitEvent,
 		)
@@ -162,18 +165,26 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 		}
 		defer o.responsePipeline.CompareAndSwap(pipeline, nil)
 
-		activeTurn, err := o.conversation.startNewTurn(trigger)
-		if err != nil {
-			return err
+		activeTurn, turnErr = o.conversation.startNewTurn(trigger)
+		if turnErr != nil {
+			return turnErr
 		}
 
-		activeTurn.TurnV1, err = pipeline.Run(ctx, activeTurn, o.conversation.History())
-		if err != nil {
+		emitEvent(events.NewTurnStarted(activeTurn.TurnV1.ID, trigger.String()))
+		defer func() {
+			if turnErr != nil {
+				emitEvent(events.NewTurnFailed(activeTurn.TurnV1.ID, turnErr.Error()))
+			}
+		}()
+
+		activeTurn.TurnV1, turnErr = pipeline.Run(ctx, activeTurn, o.conversation.History())
+		if turnErr != nil {
 			// TODO: We should do something more reasonable here
 			if err2 := o.conversation.finaliseTurn(activeTurn.TurnV1); err2 != nil {
-				return errors.Join(err, fmt.Errorf("failed to finalise turn: %w", err2))
+				turnErr = errors.Join(turnErr, fmt.Errorf("failed to finalise turn: %w", err2))
 			}
-			return fmt.Errorf("failed to run pipeline: %w", err)
+			turnErr = fmt.Errorf("failed to run pipeline: %w", turnErr)
+			return turnErr
 		}
 
 		interruptionTypes := []string{}
@@ -185,7 +196,12 @@ func (o *Orchestrator) Orchestrate(ctx context.Context, opts ...OrchestrateOptio
 		span.SetAttributes(attribute.Int("assistant_turn.queued_triggers", o.triggerPlayer.queuedTriggerCount()))
 
 		if err := o.conversation.finaliseTurn(activeTurn.TurnV1); err != nil {
-			return fmt.Errorf("failed to finalise turn: %w", err)
+			turnErr = fmt.Errorf("failed to finalise turn: %w", err)
+			return turnErr
+		}
+
+		if !activeTurn.TurnV1.IsCancelled() {
+			emitEvent(events.NewTurnCompleted(activeTurn.TurnV1.ID))
 		}
 		return nil
 	}); started {

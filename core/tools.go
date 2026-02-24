@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	events "github.com/koscakluka/ema-core/core/events"
 	"github.com/koscakluka/ema-core/core/llms"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -49,6 +50,8 @@ func (runtime *llm) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms
 		toolArguments = toolCall.Function.Arguments
 	}
 
+	runtime.emitEvent(events.NewToolCallStarted(toolCall.ID, toolName, toolArguments))
+
 	ctx, span := tracer.Start(ctx, "execute tool")
 	defer span.End()
 	span.SetAttributes(attribute.String("tool.name", toolName))
@@ -57,10 +60,12 @@ func (runtime *llm) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms
 			resp, err := tool.Execute(toolArguments)
 			if err != nil {
 				err = fmt.Errorf("failed to execute tool %q: %w", toolName, err)
+				runtime.emitEvent(events.NewToolCallFailed(toolCall.ID, toolName, err.Error()))
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
 				return nil, err
 			}
+			runtime.emitEvent(events.NewToolCallCompleted(toolCall.ID, toolName, resp))
 			return &llms.ToolCall{
 				ID:       toolCall.ID,
 				Response: resp,
@@ -69,6 +74,7 @@ func (runtime *llm) callTool(ctx context.Context, toolCall llms.ToolCall) (*llms
 	}
 
 	err := fmt.Errorf("tool not found: %s", toolName)
+	runtime.emitEvent(events.NewToolCallFailed(toolCall.ID, toolName, err.Error()))
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
 	return nil, err
