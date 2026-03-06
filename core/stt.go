@@ -41,6 +41,7 @@ func (s *speechToText) Start(ctx context.Context, encodingInfo *audio.EncodingIn
 		speechtotext.WithInterimTranscriptionCallback(s.invokeInterimTranscription),
 		speechtotext.WithPartialTranscriptionCallback(s.invokePartialTranscription),
 		speechtotext.WithTranscriptionCallback(s.invokeTranscription),
+		// TODO: Re-enable spoken-language callbacks once public API is finalized.
 		speechtotext.WithEncodingInfo(*encodingInfo),
 	}
 

@@ -10,6 +10,25 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `core/speechtotext/soniox` real-time STT client with websocket streaming,
+  endpoint finalization, and keepalive handling
+
+### Changed
+
+- Soniox STT now defaults `max_endpoint_delay_ms` to `1000` when endpoint
+  detection is enabled
+- spoken-language callback/event APIs are deferred and intentionally left behind
+  TODO markers until the public interface is finalized
+
+### Fixed
+
+- Soniox STT websocket shutdown now uses a graceful close sequence and ignores
+  expected local socket-close read errors to avoid noisy logs
+- Soniox STT now streams short synthetic silence after input pauses so endpoint
+  detection can finalize utterances before falling back to keepalive-only mode
+
 ## [v0.0.19] - 2026-02-24
 
 ### Added

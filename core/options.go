@@ -122,6 +122,7 @@ func WithTriggerHandlerV0(handler TriggerHandlerV0) OrchestratorOption {
 }
 
 type OrchestrateOptions struct {
+	// TODO: Reintroduce spoken-language callbacks once the public API is finalized.
 	onTranscription               func(transcript string)
 	onPartialTranscription        func(transcript string)
 	onInterimTranscription        func(transcript string)

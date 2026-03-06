@@ -30,6 +30,8 @@
 //     append-only transcript segment.
 //   - UserTranscriptFinal (user_input.transcript_final): terminal full
 //     transcript for the utterance.
+//   - TODO: Reintroduce spoken-language events once language callbacks are part
+//     of the stable public API.
 //
 // assistant_response events
 //

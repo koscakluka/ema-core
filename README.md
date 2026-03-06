@@ -42,6 +42,10 @@ To see logs, run:
 tail -f tmp/log
 ```
 
+## STT integrations
+
+- Soniox real-time STT client docs: [core/speechtotext/soniox/README.md](core/speechtotext/soniox/README.md)
+
 ## Why Go?
 
 Primarily it is what I use at work. The benefits are, it is low level enough to

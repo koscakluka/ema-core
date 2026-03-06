@@ -37,6 +37,7 @@ func newCallbackEventEmitter(opts OrchestrateOptions) eventEmitter {
 			if opts.onTranscription != nil {
 				opts.onTranscription(typedEvent.Transcript)
 			}
+		// TODO: Re-enable spoken-language callback mapping when API is finalized.
 		case events.AssistantResponseSegment:
 			if opts.onResponse != nil {
 				opts.onResponse(typedEvent.Segment)

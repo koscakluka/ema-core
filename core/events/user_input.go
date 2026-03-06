@@ -15,6 +15,7 @@ const (
 	KindUserTranscriptSegment Kind = "user_input.transcript_segment"
 	// KindUserTranscriptFinal identifies the final transcript for the utterance.
 	KindUserTranscriptFinal Kind = "user_input.transcript_final"
+	// TODO: Reintroduce spoken-language event kinds when language callback API is finalized.
 )
 
 // UserAudioFrame carries a user input audio frame.

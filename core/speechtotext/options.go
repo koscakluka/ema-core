@@ -8,6 +8,8 @@ type TranscriptionOptions struct {
 	PartialTranscriptionCallback        func(transcript string)
 	TranscriptionCallback               func(transcript string)
 
+	// TODO: Reintroduce spoken-language callbacks once the public API is finalized.
+
 	SpeechStartedCallback func()
 	SpeechEndedCallback   func()
 
