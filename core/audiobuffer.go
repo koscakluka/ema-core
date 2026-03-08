@@ -372,7 +372,7 @@ func (b *audioBuffer) approximatePlayheadLocked(now time.Time) int {
 		return approxPlayhead
 	}
 
-	playedSamples := audioSamples(now.Sub(b.lastMarkTimestamp), b.encodingInfo)
+	playedSamples := b.encodingInfo.BytesForDuration(now.Sub(b.lastMarkTimestamp))
 	if playedSamples <= 0 {
 		return approxPlayhead
 	}
@@ -435,7 +435,7 @@ func (b *audioBuffer) approximateNextPlayheadStepDelayLocked(now time.Time) time
 		return defaultApproximateUpdateDelay
 	}
 
-	playedSamples := audioSamples(now.Sub(b.lastMarkTimestamp), b.encodingInfo)
+	playedSamples := b.encodingInfo.BytesForDuration(now.Sub(b.lastMarkTimestamp))
 	if playedSamples < 0 {
 		playedSamples = 0
 	}
@@ -444,7 +444,7 @@ func (b *audioBuffer) approximateNextPlayheadStepDelayLocked(now time.Time) time
 		chunkSize := len(b.audio[i])
 		if playedSamples < chunkSize {
 			remaining := chunkSize - playedSamples
-			delay := samplesDuration(remaining, b.encodingInfo)
+			delay := b.encodingInfo.DurationForBytes(remaining)
 			if delay <= 0 {
 				return defaultApproximateUpdateDelay
 			}
@@ -505,21 +505,4 @@ func audioLen(audio [][]byte) int {
 		chunksTotalLength += len(audioChunk)
 	}
 	return chunksTotalLength
-}
-
-func audioSamples(duration time.Duration, encodingInfo audio.EncodingInfo) int {
-	return int(float64(duration) / float64(time.Second) * float64(encodingInfo.SampleRate) * float64(encodingInfo.Format.ByteSize()))
-}
-
-func samplesDuration(samples int, encodingInfo audio.EncodingInfo) time.Duration {
-	if samples <= 0 {
-		return 0
-	}
-
-	bytesPerSecond := encodingInfo.SampleRate * encodingInfo.Format.ByteSize()
-	if bytesPerSecond <= 0 {
-		return 0
-	}
-
-	return time.Duration(float64(samples) / float64(bytesPerSecond) * float64(time.Second))
 }
