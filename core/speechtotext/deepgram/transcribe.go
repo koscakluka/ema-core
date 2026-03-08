@@ -247,10 +247,9 @@ func (s *TranscriptionClient) generateSilence(ctx context.Context, encoding audi
 	)
 
 	const durationMs = 50
-	const milisecondsPerSecond = 1000
 	ticker := time.NewTicker(durationMs * time.Millisecond)
 
-	chunk := make([]byte, encoding.SampleRate*encoding.Format.ByteSize()*durationMs/milisecondsPerSecond)
+	chunk := make([]byte, encoding.BytesForDuration(durationMs*time.Millisecond))
 	for i := range chunk {
 		chunk[i] = encoding.SilenceValue()
 	}

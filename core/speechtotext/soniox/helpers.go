@@ -50,12 +50,12 @@ func newSilenceChunk(encodingInfo audio.EncodingInfo, duration time.Duration) ([
 		return nil, fmt.Errorf("unsupported encoding format")
 	}
 
-	frameCount := int((time.Duration(encodingInfo.SampleRate) * duration) / time.Second)
-	if frameCount <= 0 {
+	chunkSize := encodingInfo.BytesForDuration(duration)
+	if chunkSize <= 0 {
 		return nil, fmt.Errorf("invalid silence frame duration")
 	}
 
-	chunk := make([]byte, frameCount*byteSize)
+	chunk := make([]byte, chunkSize)
 	for i := range chunk {
 		chunk[i] = encodingInfo.SilenceValue()
 	}
