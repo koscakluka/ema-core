@@ -1,16 +1,18 @@
 package orchestration
 
 import (
+	"cmp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/koscakluka/ema-core/core/audio"
 	events "github.com/koscakluka/ema-core/core/events"
+	"github.com/koscakluka/ema-core/internal/utils"
 )
 
 const minSpokenTextUpdateInterval = 10 * time.Millisecond
-const maxSpokenTextUpdateInterval = 250 * time.Millisecond
+const maxSpokenTextUpdateInterval = 50 * time.Millisecond
 
 type speechPlayer struct {
 	mu sync.RWMutex
@@ -20,8 +22,8 @@ type speechPlayer struct {
 	text        []string
 	playedMarks int
 
-	lastEmittedSpokenText       string
-	hasEmittedSpokenText        bool
+	confirmedSpokenText         strings.Builder
+	currentMarkProgress         float64
 	lastEmittedPlaybackPlayhead int
 
 	segmentationBoundaries string
@@ -41,8 +43,7 @@ func (p *speechPlayer) InitBuffers(encodingInfo audio.EncodingInfo, segmentation
 		p.audioBuffer = newAudioBuffer(encodingInfo)
 		p.text = nil
 		p.playedMarks = 0
-		p.lastEmittedSpokenText = ""
-		p.hasEmittedSpokenText = false
+		p.confirmedSpokenText = strings.Builder{}
 		p.lastEmittedPlaybackPlayhead = 0
 		p.segmentationBoundaries = segmentationBoundaries
 	})
@@ -90,6 +91,8 @@ func (p *speechPlayer) TextOrMarks(yield func(textOrMark) bool) {
 		}
 
 		// mark
+		// TODO: Check if this is actually necessary, we already
+		// send a mark at the end of the text buffer.
 		p.lockFor(func() { p.text = append(p.text, "") })
 		if !yield(textOrMark{Type: textOrMarkTypeMark}) {
 			return
@@ -152,20 +155,30 @@ func (p *speechPlayer) Audio(yield func(audioOrMark) bool) {
 }
 
 func (p *speechPlayer) ConfirmOutputMark(id string) *string {
-	confirmed := false
-	p.withAudioBuffer(func(audioBuffer *audioBuffer) {
-		confirmed = audioBuffer.ConfirmMark(id)
+	var markText *string
+	var emitEvent bool
+	p.lockFor(func() {
+		if ok := p.audioBuffer.ConfirmMark(id); !ok {
+			return
+		}
+		if p.playedMarks >= len(p.text) {
+			return
+		}
+
+		emitEvent = true
+		markText = utils.Ptr(p.text[p.playedMarks])
+		p.confirmedSpokenText.WriteString(*markText)
+		p.advanceToNextMarkLocked()
 	})
-	if !confirmed {
-		return nil
+	if !emitEvent {
+		return markText
 	}
 
-	transcript := p.confirmTextMark()
 	p.emitPlaybackProgress()
-	if transcript != nil {
-		p.emitEvent(events.NewAssistantPlaybackMarkPlayed(id, *transcript))
+	if markText != nil {
+		p.emitEvent(events.NewAssistantPlaybackMarkPlayed(id, *markText))
 	}
-	return transcript
+	return markText
 }
 
 func (p *speechPlayer) PauseAudio() {
@@ -193,7 +206,7 @@ func (p *speechPlayer) runProgressEmitter(done <-chan struct{}) {
 	}
 
 	nextUpdate := p.emitPlaybackProgress()
-	timer := time.NewTimer(clampSpokenTextUpdateInterval(nextUpdate))
+	timer := time.NewTimer(clamp(nextUpdate, minSpokenTextUpdateInterval, maxSpokenTextUpdateInterval))
 	defer timer.Stop()
 
 	for {
@@ -202,7 +215,7 @@ func (p *speechPlayer) runProgressEmitter(done <-chan struct{}) {
 			return
 		case <-timer.C:
 			nextUpdate = p.emitPlaybackProgress()
-			timer.Reset(clampSpokenTextUpdateInterval(nextUpdate))
+			timer.Reset(clamp(nextUpdate, minSpokenTextUpdateInterval, maxSpokenTextUpdateInterval))
 		}
 	}
 }
@@ -214,7 +227,7 @@ func (p *speechPlayer) emitPlaybackProgress() time.Duration {
 
 	var spokenText string
 	var spokenDelta string
-	emitSpokenText := false
+	// emitSpokenText := false
 	var frame []byte
 	nextUpdate := defaultApproximateUpdateDelay
 	p.lockFor(func() {
@@ -230,11 +243,19 @@ func (p *speechPlayer) emitPlaybackProgress() time.Duration {
 		if len(delta) > 0 {
 			frame = delta
 		}
+		progress = clamp(progress, 0, 1)
+		if p.currentMarkProgress < progress {
+			if p.playedMarks < len(p.text) && progress > 0 {
+				currentSegmentText := getPercentOf(p.text[p.playedMarks], progress)
 
-		spokenText, spokenDelta, emitSpokenText = p.nextSpokenTextUpdateLocked(progress)
+				spokenDelta = currentSegmentText[len(getPercentOf(p.text[p.playedMarks], p.currentMarkProgress)):]
+				spokenText = p.confirmedSpokenText.String() + currentSegmentText
+			}
+			p.currentMarkProgress = progress
+		}
 	})
 
-	if emitSpokenText {
+	if spokenText != "" {
 		p.emitEvent(events.NewAssistantPlaybackTranscriptUpdated(spokenText))
 		p.emitEvent(events.NewAssistantPlaybackTranscriptSegment(spokenDelta))
 	}
@@ -244,32 +265,6 @@ func (p *speechPlayer) emitPlaybackProgress() time.Duration {
 	}
 
 	return nextUpdate
-}
-
-func (p *speechPlayer) nextSpokenTextUpdateLocked(currentSegmentProgress float64) (string, string, bool) {
-	spokenText := p.approximateSpokenTextSoFarLocked(currentSegmentProgress)
-
-	previousSpokenText := p.lastEmittedSpokenText
-	hasPreviousEmission := p.hasEmittedSpokenText
-	if hasPreviousEmission && spokenText == previousSpokenText {
-		return "", "", false
-	}
-	if !hasPreviousEmission && spokenText == "" {
-		return "", "", false
-	}
-	if hasPreviousEmission && !strings.HasPrefix(spokenText, previousSpokenText) {
-		return "", "", false
-	}
-
-	p.lastEmittedSpokenText = spokenText
-	p.hasEmittedSpokenText = true
-
-	spokenDelta := spokenText
-	if hasPreviousEmission {
-		spokenDelta = spokenText[len(previousSpokenText):]
-	}
-
-	return spokenText, spokenDelta, true
 }
 
 func (p *speechPlayer) Snapshot() *speechPlayer {
@@ -296,86 +291,18 @@ func (p *speechPlayer) SetEventEmitter(emitEvent eventEmitter) {
 	})
 }
 
-func (p *speechPlayer) confirmTextMark() *string {
-	if p == nil {
-		return nil
-	}
-
-	var transcript *string
-	p.lockFor(func() {
-		if p.playedMarks >= len(p.text) {
-			return
-		}
-
-		segment := p.text[p.playedMarks]
-		transcript = &segment
-		p.playedMarks++
-	})
-
-	return transcript
-}
-
 func (p *speechPlayer) SpokenTextSoFar() string {
 	var s string
-	p.rLockFor(func() {
-		if p.playedMarks <= 0 || len(p.text) == 0 {
-			s = ""
-			return
-		}
-
-		maxSegments := p.playedMarks
-		if maxSegments > len(p.text) {
-			maxSegments = len(p.text)
-		}
-
-		var spoken strings.Builder
-		for i := 0; i < maxSegments; i++ {
-			spoken.WriteString(p.text[i])
-		}
-
-		s = spoken.String()
-	})
+	p.rLockFor(func() { s = p.confirmedSpokenText.String() })
 	return s
 
 }
-func (p *speechPlayer) approximateSpokenTextSoFarLocked(currentSegmentProgress float64) string {
-	if p == nil {
-		return ""
-	}
 
-	if currentSegmentProgress < 0 {
-		currentSegmentProgress = 0
-	} else if currentSegmentProgress > 1 {
-		currentSegmentProgress = 1
+func (p *speechPlayer) advanceToNextMarkLocked() {
+	if p != nil && p.playedMarks < len(p.text) {
+		p.playedMarks++
+		p.currentMarkProgress = 0
 	}
-
-	maxSegments := p.playedMarks
-	if maxSegments > len(p.text) {
-		maxSegments = len(p.text)
-	}
-
-	var spoken strings.Builder
-	for i := 0; i < maxSegments; i++ {
-		spoken.WriteString(p.text[i])
-	}
-
-	if currentSegmentProgress == 0 || maxSegments >= len(p.text) {
-		return spoken.String()
-	}
-
-	currentSegmentRunes := []rune(p.text[maxSegments])
-	currentSegmentLen := len(currentSegmentRunes)
-	if currentSegmentLen == 0 {
-		return spoken.String()
-	}
-
-	charsToShow := int(float64(currentSegmentLen) * currentSegmentProgress)
-	if charsToShow > currentSegmentLen {
-		charsToShow = currentSegmentLen
-	}
-
-	spoken.WriteString(string(currentSegmentRunes[:charsToShow]))
-	return spoken.String()
 }
 
 func (p *speechPlayer) withTextBuffer(f func(*textBuffer)) {
@@ -415,16 +342,6 @@ func (p *speechPlayer) rLockFor(f func()) {
 	}
 }
 
-func clampSpokenTextUpdateInterval(interval time.Duration) time.Duration {
-	if interval < minSpokenTextUpdateInterval {
-		return minSpokenTextUpdateInterval
-	}
-	if interval > maxSpokenTextUpdateInterval {
-		return maxSpokenTextUpdateInterval
-	}
-	return interval
-}
-
 type textOrMark struct {
 	Type textOrMarkType
 	Text string
@@ -436,3 +353,15 @@ const (
 	textOrMarkTypeText textOrMarkType = "text"
 	textOrMarkTypeMark textOrMarkType = "mark"
 )
+
+func getPercentOf(text string, percent float64) string {
+	// TODO: Check if it makes more sense to return an error in this case or
+	// even just return empty string (<=0) and full text (>=1).
+	percent = clamp(percent, 0, 1)
+	approxLen := int(float64(len(text)) * percent)
+	return text[:min(approxLen, len(text))]
+}
+
+func clamp[T cmp.Ordered](x T, minValue T, maxValue T) T {
+	return max(min(x, maxValue), minValue)
+}

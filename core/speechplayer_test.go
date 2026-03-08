@@ -1,437 +1,111 @@
 package orchestration
 
 import (
-	"bytes"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/koscakluka/ema-core/core/audio"
 	events "github.com/koscakluka/ema-core/core/events"
 )
 
-func setTextSegments(player *speechPlayer, segments ...string) {
-	player.text = append([]string(nil), segments...)
-}
+func TestSpeechPlayerTextOrMarksWithoutSegmentationMarks(t *testing.T) {
+	player := newSpeechPlayerForTest("")
 
-func emitSpokenProgress(player *speechPlayer, progress float64) {
-	spokenText, spokenDelta, emit := "", "", false
-	player.lockFor(func() {
-		spokenText, spokenDelta, emit = player.nextSpokenTextUpdateLocked(progress)
-	})
-	if !emit {
-		return
+	items := addAndDrainText(player, "Hello", " world")
+
+	if len(items) != 2 {
+		t.Fatalf("expected 2 text items, got %d", len(items))
 	}
-
-	player.emitEvent(events.NewAssistantPlaybackTranscriptUpdated(spokenText))
-	player.emitEvent(events.NewAssistantPlaybackTranscriptSegment(spokenDelta))
-}
-
-func confirmSpokenMark(player *speechPlayer) {
-	_ = player.confirmTextMark()
-}
-
-func approximateSpokenText(player *speechPlayer, progress float64) (spoken string) {
-	player.rLockFor(func() {
-		spoken = player.approximateSpokenTextSoFarLocked(progress)
-	})
-	return spoken
-}
-
-func emitPlaybackProgress(player *speechPlayer) {
-	player.emitPlaybackProgress()
-}
-
-func TestSpeechPlayerAddTextTracksCurrentSegment(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello world")
-
-	if len(player.text) != 1 {
-		t.Fatalf("expected one text segment, got %d", len(player.text))
+	if items[0].Type != "text" || items[0].Text != "Hello" {
+		t.Fatalf("expected first text item %q, got %#v", "Hello", items[0])
 	}
-	if got := player.text[0]; got != "Hello world" {
-		t.Fatalf("expected segment text %q, got %q", "Hello world", got)
-	}
-}
-
-func TestSpeechPlayerMarkStartsNewSegment(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello", " world")
-
-	if len(player.text) != 2 {
-		t.Fatalf("expected two text segments, got %d", len(player.text))
-	}
-	if got := player.text[0]; got != "Hello" {
-		t.Fatalf("expected first segment %q, got %q", "Hello", got)
-	}
-	if got := player.text[1]; got != " world" {
-		t.Fatalf("expected second segment %q, got %q", " world", got)
-	}
-}
-
-func TestSpeechPlayerSpokenTextSoFarFollowsConfirmedMarks(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello", " world", "!")
-
-	if got := player.SpokenTextSoFar(); got != "" {
-		t.Fatalf("expected no spoken text before marks are confirmed, got %q", got)
-	}
-
-	confirmSpokenMark(player)
-	if got := player.SpokenTextSoFar(); got != "Hello" {
-		t.Fatalf("expected spoken text %q after first mark, got %q", "Hello", got)
-	}
-
-	confirmSpokenMark(player)
-	if got := player.SpokenTextSoFar(); got != "Hello world" {
-		t.Fatalf("expected spoken text %q after second mark, got %q", "Hello world", got)
-	}
-}
-
-func TestSpeechPlayerConfirmMarkDoesNotOverrun(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello", "")
-	confirmSpokenMark(player)
-	confirmSpokenMark(player)
-	confirmSpokenMark(player)
-
-	if got := player.SpokenTextSoFar(); got != "Hello" {
-		t.Fatalf("expected spoken text to remain %q when over-confirmed, got %q", "Hello", got)
-	}
-}
-
-func TestSpeechPlayerApproximateSpokenTextSoFarIncludesCurrentSegment(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello", " world")
-
-	if got := approximateSpokenText(player, 0.5); got != "He" {
-		t.Fatalf("expected approximate spoken text %q, got %q", "He", got)
-	}
-
-	confirmSpokenMark(player)
-	if got := approximateSpokenText(player, 0.5); got != "Hello wo" {
-		t.Fatalf("expected approximate spoken text %q, got %q", "Hello wo", got)
-	}
-}
-
-func TestSpeechPlayerApproximateSpokenTextSoFarClampsProgress(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello", " world")
-	confirmSpokenMark(player)
-
-	if got := approximateSpokenText(player, -1); got != "Hello" {
-		t.Fatalf("expected clamped lower bound result %q, got %q", "Hello", got)
-	}
-	if got := approximateSpokenText(player, 2); got != "Hello world" {
-		t.Fatalf("expected clamped upper bound result %q, got %q", "Hello world", got)
-	}
-}
-
-func TestSpeechPlayerEmitApproximateSpokenTextEmitsEvent(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello", " world")
-
-	updates := []string{}
-	player.SetEventEmitter(func(event events.Event) {
-		if spokenText, ok := event.(events.AssistantPlaybackTranscriptUpdated); ok {
-			updates = append(updates, spokenText.Transcript)
-		}
-	})
-
-	emitSpokenProgress(player, 0.5)
-	confirmSpokenMark(player)
-	emitSpokenProgress(player, 0.5)
-
-	if len(updates) != 2 {
-		t.Fatalf("expected 2 spoken text updates, got %d", len(updates))
-	}
-	if updates[0] != "He" {
-		t.Fatalf("expected first update %q, got %q", "He", updates[0])
-	}
-	if updates[1] != "Hello wo" {
-		t.Fatalf("expected second update %q, got %q", "Hello wo", updates[1])
-	}
-}
-
-func TestSpeechPlayerEmitApproximateSpokenTextSkipsUnchangedValues(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello")
-
-	updates := []string{}
-	player.SetEventEmitter(func(event events.Event) {
-		if spokenText, ok := event.(events.AssistantPlaybackTranscriptUpdated); ok {
-			updates = append(updates, spokenText.Transcript)
-		}
-	})
-
-	emitSpokenProgress(player, 0.5)
-	emitSpokenProgress(player, 0.5)
-	emitSpokenProgress(player, 0.5)
-
-	if len(updates) != 1 {
-		t.Fatalf("expected 1 spoken text update for unchanged value, got %d", len(updates))
-	}
-	if updates[0] != "He" {
-		t.Fatalf("expected update %q, got %q", "He", updates[0])
-	}
-}
-
-func TestSpeechPlayerEmitApproximateSpokenTextDeltaReportsIncrementalChange(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello")
-
-	deltas := []string{}
-	player.SetEventEmitter(func(event events.Event) {
-		if spokenTextDelta, ok := event.(events.AssistantPlaybackTranscriptSegment); ok {
-			deltas = append(deltas, spokenTextDelta.Segment)
-		}
-	})
-
-	emitSpokenProgress(player, 0.2)
-	emitSpokenProgress(player, 0.6)
-
-	if len(deltas) != 2 {
-		t.Fatalf("expected 2 spoken text deltas, got %d", len(deltas))
-	}
-	if deltas[0] != "H" {
-		t.Fatalf("expected first delta %q, got %q", "H", deltas[0])
-	}
-	if deltas[1] != "el" {
-		t.Fatalf("expected second delta %q, got %q", "el", deltas[1])
-	}
-}
-
-func TestSpeechPlayerEmitApproximateSpokenTextDeltaSkipsRegression(t *testing.T) {
-	player := newSpeechPlayer()
-
-	setTextSegments(player, "Hello")
-
-	deltas := []string{}
-	player.SetEventEmitter(func(event events.Event) {
-		if spokenTextDelta, ok := event.(events.AssistantPlaybackTranscriptSegment); ok {
-			deltas = append(deltas, spokenTextDelta.Segment)
-		}
-	})
-
-	emitSpokenProgress(player, 1)
-	emitSpokenProgress(player, 0.2)
-
-	if len(deltas) != 1 {
-		t.Fatalf("expected 1 spoken text delta when playback progress regresses, got %d", len(deltas))
-	}
-	if deltas[0] != "Hello" {
-		t.Fatalf("expected first delta %q, got %q", "Hello", deltas[0])
-	}
-}
-
-func TestSpeechPlayerOnAudioEndedEmitsProvidedTranscript(t *testing.T) {
-	player := newSpeechPlayer()
-
-	transcripts := []string{}
-	player.SetEventEmitter(func(event events.Event) {
-		if audioEnded, ok := event.(events.AssistantPlaybackEnded); ok {
-			transcripts = append(transcripts, audioEnded.Transcript)
-		}
-	})
-
-	player.emitEvent(events.NewAssistantPlaybackEnded("full generated transcript"))
-
-	if len(transcripts) != 1 || transcripts[0] != "full generated transcript" {
-		t.Fatalf("expected one audio-ended transcript %q, got %v", "full generated transcript", transcripts)
-	}
-}
-
-func TestSpeechPlayerSnapshotKeepsEmitterButNotMarkedText(t *testing.T) {
-	player := newSpeechPlayer()
-	setTextSegments(player, "already queued")
-
-	audioEnded := []string{}
-	spoken := []string{}
-	spokenDeltas := []string{}
-	player.SetEventEmitter(func(event events.Event) {
-		switch typedEvent := event.(type) {
-		case events.AssistantPlaybackEnded:
-			audioEnded = append(audioEnded, typedEvent.Transcript)
-		case events.AssistantPlaybackTranscriptUpdated:
-			spoken = append(spoken, typedEvent.Transcript)
-		case events.AssistantPlaybackTranscriptSegment:
-			spokenDeltas = append(spokenDeltas, typedEvent.Segment)
-		}
-	})
-
-	snapshot := player.Snapshot()
-	if len(snapshot.text) != 0 {
-		t.Fatalf("expected snapshot text queue to be empty, got %d segments", len(snapshot.text))
-	}
-
-	snapshot.emitEvent(events.NewAssistantPlaybackEnded("new turn transcript"))
-	if len(audioEnded) != 1 || audioEnded[0] != "new turn transcript" {
-		t.Fatalf("expected snapshot audio-ended transcript %q, got %v", "new turn transcript", audioEnded)
-	}
-
-	setTextSegments(snapshot, "Hello")
-	emitSpokenProgress(snapshot, 1)
-	if len(spoken) != 1 || spoken[0] != "Hello" {
-		t.Fatalf("expected snapshot spoken-text event %q, got %v", "Hello", spoken)
-	}
-	if len(spokenDeltas) != 1 || spokenDeltas[0] != "Hello" {
-		t.Fatalf("expected snapshot spoken-text delta event %q, got %v", "Hello", spokenDeltas)
-	}
-}
-
-func TestSpeechPlayerTextBufferOwnership(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
-
-	player.AddTextChunk("Hello")
-	player.AddTextChunk(" world")
-	player.TextComplete()
-
-	chunks := []string{}
-	marks := 0
-	for item := range player.TextOrMarks {
-		switch item.Type {
-		case textOrMarkTypeText:
-			chunks = append(chunks, item.Text)
-		case textOrMarkTypeMark:
-			marks++
-		}
-	}
-
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks in owned text buffer, got %d", len(chunks))
-	}
-	if chunks[0] != "Hello" {
-		t.Fatalf("expected first chunk %q, got %q", "Hello", chunks[0])
-	}
-	if chunks[1] != " world" {
-		t.Fatalf("expected second chunk %q, got %q", " world", chunks[1])
-	}
-	if marks != 0 {
-		t.Fatalf("expected no marks with boundaries disabled, got %d", marks)
+	if items[1].Type != "text" || items[1].Text != " world" {
+		t.Fatalf("expected second text item %q, got %#v", " world", items[1])
 	}
 	if got := player.FullText(); got != "Hello world" {
-		t.Fatalf("expected full owned text %q, got %q", "Hello world", got)
+		t.Fatalf("expected full text %q, got %q", "Hello world", got)
 	}
 }
 
-func TestSpeechPlayerOnAudioOutputMarkPlayedReturnsTranscript(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
-	setTextSegments(player, "Hello")
+func TestSpeechPlayerTextOrMarksEmitsBoundaryAndTrailingMark(t *testing.T) {
+	player := newSpeechPlayerForTest("?.!")
 
-	player.AddAudio([]byte{1, 2, 3})
-	player.AddMark()
+	items := addAndDrainText(player, "Hello.")
 
-	markID := ""
-	for audioOrMark := range player.Audio {
-		if audioOrMark.Type == "mark" {
-			markID = audioOrMark.Mark
-			break
-		}
+	if len(items) != 3 {
+		t.Fatalf("expected text + boundary mark + trailing mark, got %d items", len(items))
 	}
-
-	if markID == "" {
-		t.Fatalf("expected owned audio buffer to emit a mark")
+	if items[0].Type != "text" || items[0].Text != "Hello." {
+		t.Fatalf("expected first item to be text %q, got %#v", "Hello.", items[0])
 	}
-
-	transcript := player.ConfirmOutputMark(markID)
-	if transcript == nil {
-		t.Fatalf("expected transcript for confirmed mark")
+	if items[1].Type != "mark" {
+		t.Fatalf("expected second item to be mark, got %#v", items[1])
 	}
-	if *transcript != "Hello" {
-		t.Fatalf("expected transcript %q, got %q", "Hello", *transcript)
+	if items[2].Type != "mark" {
+		t.Fatalf("expected third item to be mark, got %#v", items[2])
 	}
 }
 
-func TestSpeechPlayerOnAudioOutputMarkPlayedCombinesConfirmationAndEmission(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
+func TestSpeechPlayerTextOrMarksEmitsOnlyTrailingMarkWhenNoBoundarySeen(t *testing.T) {
+	player := newSpeechPlayerForTest("?.!")
 
-	setTextSegments(player, "Hello", " world")
+	items := addAndDrainText(player, "Hello world")
 
-	updates := []string{}
-	markEvents := []events.AssistantPlaybackMarkPlayed{}
-	player.SetEventEmitter(func(event events.Event) {
-		switch typedEvent := event.(type) {
-		case events.AssistantPlaybackTranscriptUpdated:
-			updates = append(updates, typedEvent.Transcript)
-		case events.AssistantPlaybackMarkPlayed:
-			markEvents = append(markEvents, typedEvent)
-		}
-	})
+	if len(items) != 2 {
+		t.Fatalf("expected text + trailing mark, got %d items", len(items))
+	}
+	if items[0].Type != "text" || items[0].Text != "Hello world" {
+		t.Fatalf("expected first item to be text %q, got %#v", "Hello world", items[0])
+	}
+	if items[1].Type != "mark" {
+		t.Fatalf("expected second item to be trailing mark, got %#v", items[1])
+	}
+}
 
+func TestSpeechPlayerConfirmOutputMarkReturnsTranscriptAndAdvancesSpokenText(t *testing.T) {
+	player := newSpeechPlayerForTest("")
+	recorder := &speechPlayerEventRecorder{}
+	player.SetEventEmitter(recorder.emit)
+
+	addAndDrainText(player, "Hello")
 	player.AddAudio([]byte{1, 2, 3})
 	player.AddMark()
 
-	markID := ""
-	for audioOrMark := range player.Audio {
-		if audioOrMark.Type == "mark" {
-			markID = audioOrMark.Mark
-			break
-		}
+	markIDs := collectMarkIDs(player, 1)
+	if len(markIDs) != 1 {
+		t.Fatalf("expected one emitted mark id, got %d", len(markIDs))
 	}
 
-	if markID == "" {
-		t.Fatalf("expected owned audio buffer to emit a mark")
-	}
-
-	transcript := player.ConfirmOutputMark(markID)
+	transcript := player.ConfirmOutputMark(markIDs[0])
 	if transcript == nil || *transcript != "Hello" {
-		t.Fatalf("expected combined mark handling transcript %q, got %v", "Hello", transcript)
+		t.Fatalf("expected confirmed transcript %q, got %v", "Hello", transcript)
+	}
+	if got := player.SpokenTextSoFar(); got != "Hello" {
+		t.Fatalf("expected spoken text %q after confirmation, got %q", "Hello", got)
 	}
 
-	if got := player.SpokenTextSoFar(); got != "Hello" {
-		t.Fatalf("expected spoken text to advance to %q, got %q", "Hello", got)
-	}
-	if len(updates) != 1 || updates[0] != "Hello" {
-		t.Fatalf("expected one spoken-text emission %q, got %v", "Hello", updates)
-	}
+	markEvents := recorder.markPlayedEvents()
 	if len(markEvents) != 1 {
-		t.Fatalf("expected one playback mark played event, got %d", len(markEvents))
+		t.Fatalf("expected one mark played event, got %d", len(markEvents))
 	}
-	if markEvents[0].Mark != markID {
-		t.Fatalf("expected playback mark played event mark %q, got %q", markID, markEvents[0].Mark)
+	if markEvents[0].Mark != markIDs[0] {
+		t.Fatalf("expected mark played id %q, got %q", markIDs[0], markEvents[0].Mark)
 	}
 	if markEvents[0].Transcript != "Hello" {
-		t.Fatalf("expected playback mark played event transcript %q, got %q", "Hello", markEvents[0].Transcript)
+		t.Fatalf("expected mark played transcript %q, got %q", "Hello", markEvents[0].Transcript)
 	}
 }
 
-func TestSpeechPlayerOnAudioOutputMarkPlayedIgnoresUnknownOrDuplicateMarks(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
+func TestSpeechPlayerConfirmOutputMarkIgnoresUnknownAndDuplicateMarkIDs(t *testing.T) {
+	player := newSpeechPlayerForTest("")
 
-	setTextSegments(player, "Hello", " world")
-
-	updates := []string{}
-	player.SetEventEmitter(func(event events.Event) {
-		if spokenText, ok := event.(events.AssistantPlaybackTranscriptUpdated); ok {
-			updates = append(updates, spokenText.Transcript)
-		}
-	})
-
+	addAndDrainText(player, "Hello")
 	player.AddAudio([]byte{1, 2, 3})
 	player.AddMark()
 
-	markID := ""
-	for audioOrMark := range player.Audio {
-		if audioOrMark.Type == "mark" {
-			markID = audioOrMark.Mark
-			break
-		}
-	}
-
-	if markID == "" {
-		t.Fatalf("expected owned audio buffer to emit a mark")
+	markIDs := collectMarkIDs(player, 1)
+	if len(markIDs) != 1 {
+		t.Fatalf("expected one emitted mark id, got %d", len(markIDs))
 	}
 
 	if transcript := player.ConfirmOutputMark("unknown-mark"); transcript != nil {
@@ -441,57 +115,78 @@ func TestSpeechPlayerOnAudioOutputMarkPlayedIgnoresUnknownOrDuplicateMarks(t *te
 		t.Fatalf("expected unknown mark to not advance spoken text, got %q", got)
 	}
 
-	first := player.ConfirmOutputMark(markID)
+	first := player.ConfirmOutputMark(markIDs[0])
 	if first == nil || *first != "Hello" {
 		t.Fatalf("expected first confirmation transcript %q, got %v", "Hello", first)
 	}
 
-	second := player.ConfirmOutputMark(markID)
+	second := player.ConfirmOutputMark(markIDs[0])
 	if second != nil {
-		t.Fatalf("expected duplicate mark callback to return nil transcript, got %q", *second)
+		t.Fatalf("expected duplicate mark to return nil transcript, got %q", *second)
 	}
 
 	if got := player.SpokenTextSoFar(); got != "Hello" {
-		t.Fatalf("expected duplicate mark to not advance spoken text beyond %q, got %q", "Hello", got)
+		t.Fatalf("expected spoken text to remain %q after duplicate mark, got %q", "Hello", got)
 	}
-	if len(updates) != 1 || updates[0] != "Hello" {
-		t.Fatalf("expected exactly one spoken-text emission %q, got %v", "Hello", updates)
+}
+
+func TestSpeechPlayerSpokenTextSoFarFollowsConfirmedMarkOrder(t *testing.T) {
+	player := newSpeechPlayerForTest("?.!")
+
+	addAndDrainText(player, "Hello.", " world.")
+
+	player.AddAudio([]byte{1})
+	player.AddMark()
+	player.AddAudio([]byte{2})
+	player.AddMark()
+
+	markIDs := collectMarkIDs(player, 2)
+	if len(markIDs) != 2 {
+		t.Fatalf("expected two emitted mark ids, got %d", len(markIDs))
+	}
+
+	if got := player.SpokenTextSoFar(); got != "" {
+		t.Fatalf("expected no spoken text before mark confirmations, got %q", got)
+	}
+
+	first := player.ConfirmOutputMark(markIDs[0])
+	if first == nil || *first != "Hello." {
+		t.Fatalf("expected first transcript %q, got %v", "Hello.", first)
+	}
+	if got := player.SpokenTextSoFar(); got != "Hello." {
+		t.Fatalf("expected spoken text %q after first mark, got %q", "Hello.", got)
+	}
+
+	second := player.ConfirmOutputMark(markIDs[1])
+	if second == nil || *second != " world." {
+		t.Fatalf("expected second transcript %q, got %v", " world.", second)
+	}
+	if got := player.SpokenTextSoFar(); got != "Hello. world." {
+		t.Fatalf("expected spoken text %q after second mark, got %q", "Hello. world.", got)
 	}
 }
 
 func TestSpeechPlayerAudioEmitsPlaybackStartedWhenAudioIsConsumed(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
-
-	started := 0
-	player.SetEventEmitter(func(event events.Event) {
-		if _, ok := event.(events.AssistantPlaybackStarted); ok {
-			started++
-		}
-	})
+	player := newSpeechPlayerForTest("")
+	recorder := &speechPlayerEventRecorder{}
+	player.SetEventEmitter(recorder.emit)
 
 	player.AddAudio([]byte{1, 2, 3})
 	player.AddMark()
 
 	player.Audio(func(item audioOrMark) bool {
-		return item.Type == audioOrMarkTypeAudio
+		return item.Type == "audio"
 	})
 
-	if started != 1 {
+	if started := recorder.startedCount(); started != 1 {
 		t.Fatalf("expected one playback started event, got %d", started)
 	}
 }
 
 func TestSpeechPlayerAudioSkipsPlaybackStartedWhenFirstItemRejected(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
-
-	started := 0
-	player.SetEventEmitter(func(event events.Event) {
-		if _, ok := event.(events.AssistantPlaybackStarted); ok {
-			started++
-		}
-	})
+	player := newSpeechPlayerForTest("")
+	recorder := &speechPlayerEventRecorder{}
+	player.SetEventEmitter(recorder.emit)
 
 	player.AddAudio([]byte{1, 2, 3})
 	player.AddMark()
@@ -501,153 +196,159 @@ func TestSpeechPlayerAudioSkipsPlaybackStartedWhenFirstItemRejected(t *testing.T
 		return false
 	})
 
-	if started != 0 {
-		t.Fatalf("expected no playback started event when first item is rejected, got %d", started)
+	if started := recorder.startedCount(); started != 0 {
+		t.Fatalf("expected no playback started event, got %d", started)
 	}
 }
 
-func TestSpeechPlayerTextOrMarksEmitsBoundaryMarkWhenConfigured(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "?.!")
+func TestSpeechPlayerAudioEmitsPlaybackEndedWithFullText(t *testing.T) {
+	player := newSpeechPlayerForTest("")
+	recorder := &speechPlayerEventRecorder{}
+	player.SetEventEmitter(recorder.emit)
 
-	player.AddTextChunk("Hello.")
+	player.AddTextChunk("full generated transcript")
 	player.TextComplete()
 
-	items := []textOrMark{}
-	for item := range player.TextOrMarks {
-		items = append(items, item)
-	}
+	player.AddAudio([]byte{1, 2, 3})
+	player.AddMark()
 
-	if len(items) != 3 {
-		t.Fatalf("expected one text and two mark events (boundary + trailing), got %d items", len(items))
-	}
-	if items[0].Type != textOrMarkTypeText || items[0].Text != "Hello." {
-		t.Fatalf("expected first event to be text %q, got %#v", "Hello.", items[0])
-	}
-	if items[1].Type != textOrMarkTypeMark {
-		t.Fatalf("expected second event to be mark, got %#v", items[1])
-	}
-	if items[2].Type != textOrMarkTypeMark {
-		t.Fatalf("expected third event to be trailing mark, got %#v", items[2])
-	}
-	if len(player.text) != 3 {
-		t.Fatalf("expected boundary and trailing segmentation to create two next segments, got %d", len(player.text))
-	}
-}
-
-func TestSpeechPlayerTextOrMarksDoesNotEmitMarkWhenDisabled(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
-
-	player.AddTextChunk("Hello.")
-	player.TextComplete()
-
-	items := []textOrMark{}
-	for item := range player.TextOrMarks {
-		items = append(items, item)
-	}
-
-	if len(items) != 1 {
-		t.Fatalf("expected only one text event when boundaries disabled, got %d", len(items))
-	}
-	if items[0].Type != textOrMarkTypeText || items[0].Text != "Hello." {
-		t.Fatalf("expected text event %q, got %#v", "Hello.", items[0])
-	}
-	if len(player.text) != 1 {
-		t.Fatalf("expected no boundary segmentation when disabled, got %d segments", len(player.text))
-	}
-	if got := player.text[0]; got != "Hello." {
-		t.Fatalf("expected text to remain in current segment %q, got %q", "Hello.", got)
-	}
-}
-
-func TestSpeechPlayerTextOrMarksEmitsTrailingMarkWithoutBoundary(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "?.!")
-
-	player.AddTextChunk("Hello world")
-	player.TextComplete()
-
-	items := []textOrMark{}
-	for item := range player.TextOrMarks {
-		items = append(items, item)
-	}
-
-	if len(items) != 2 {
-		t.Fatalf("expected one text and one trailing mark event without boundary, got %d", len(items))
-	}
-	if items[0].Type != textOrMarkTypeText || items[0].Text != "Hello world" {
-		t.Fatalf("expected text event %q, got %#v", "Hello world", items[0])
-	}
-	if items[1].Type != textOrMarkTypeMark {
-		t.Fatalf("expected second event to be trailing mark, got %#v", items[1])
-	}
-	if len(player.text) != 2 {
-		t.Fatalf("expected trailing segmentation without boundary, got %d segments", len(player.text))
-	}
-}
-
-func TestSpeechPlayerEmitApproximatePlaybackFrameEmitsEvent(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
-
-	frames := [][]byte{}
-	player.SetEventEmitter(func(event events.Event) {
-		if playbackFrame, ok := event.(events.AssistantPlaybackFrame); ok {
-			frames = append(frames, append([]byte(nil), playbackFrame.Audio...))
-		}
+	player.Audio(func(item audioOrMark) bool {
+		_ = item
+		return false
 	})
 
-	player.AddAudio([]byte{1, 2})
-	player.AddAudio([]byte{3, 4})
-
-	player.audioBuffer.mu.Lock()
-	player.audioBuffer.externalPlayhead = 0
-	player.audioBuffer.internalPlayhead = 2
-	player.audioBuffer.lastMarkTimestamp = time.Now().Add(-2 * time.Second)
-	player.audioBuffer.mu.Unlock()
-
-	emitPlaybackProgress(player)
-
-	if len(frames) != 1 {
-		t.Fatalf("expected one playback frame event, got %d", len(frames))
-	}
-	if !bytes.Equal(frames[0], []byte{1, 2, 3, 4}) {
-		t.Fatalf("expected playback frame %v, got %v", []byte{1, 2, 3, 4}, frames[0])
+	ended := recorder.endedTranscripts()
+	if len(ended) != 1 || ended[0] != "full generated transcript" {
+		t.Fatalf("expected one playback ended transcript %q, got %v", "full generated transcript", ended)
 	}
 }
 
-func TestSpeechPlayerEmitApproximatePlaybackFrameSkipsRegression(t *testing.T) {
-	player := newSpeechPlayer()
-	player.InitBuffers(audio.GetDefaultEncodingInfo(), "")
+func TestSpeechPlayerSnapshotKeepsEmitterAndStartsWithFreshState(t *testing.T) {
+	player := newSpeechPlayerForTest("")
+	recorder := &speechPlayerEventRecorder{}
+	player.SetEventEmitter(recorder.emit)
 
-	frames := [][]byte{}
-	player.SetEventEmitter(func(event events.Event) {
-		if playbackFrame, ok := event.(events.AssistantPlaybackFrame); ok {
-			frames = append(frames, append([]byte(nil), playbackFrame.Audio...))
+	addAndDrainText(player, "already queued")
+	player.AddAudio([]byte{1})
+	player.AddMark()
+
+	markIDs := collectMarkIDs(player, 1)
+	if len(markIDs) != 1 {
+		t.Fatalf("expected one emitted mark id, got %d", len(markIDs))
+	}
+	if transcript := player.ConfirmOutputMark(markIDs[0]); transcript == nil || *transcript != "already queued" {
+		t.Fatalf("expected initial transcript %q, got %v", "already queued", transcript)
+	}
+
+	snapshot := player.Snapshot()
+	if snapshot == nil {
+		t.Fatalf("expected snapshot to be created")
+	}
+	if got := snapshot.SpokenTextSoFar(); got != "" {
+		t.Fatalf("expected snapshot spoken text to start empty, got %q", got)
+	}
+
+	before := len(recorder.markPlayedEvents())
+
+	snapshot.InitBuffers(audio.GetDefaultEncodingInfo(), "")
+	addAndDrainText(snapshot, "new turn transcript")
+	snapshot.AddAudio([]byte{9})
+	snapshot.AddMark()
+
+	snapshotMarkIDs := collectMarkIDs(snapshot, 1)
+	if len(snapshotMarkIDs) != 1 {
+		t.Fatalf("expected snapshot to emit one mark id, got %d", len(snapshotMarkIDs))
+	}
+
+	snapshotTranscript := snapshot.ConfirmOutputMark(snapshotMarkIDs[0])
+	if snapshotTranscript == nil || *snapshotTranscript != "new turn transcript" {
+		t.Fatalf("expected snapshot transcript %q, got %v", "new turn transcript", snapshotTranscript)
+	}
+
+	afterEvents := recorder.markPlayedEvents()
+	if len(afterEvents) != before+1 {
+		t.Fatalf("expected snapshot confirmation to emit one additional mark event, got %d -> %d", before, len(afterEvents))
+	}
+	last := afterEvents[len(afterEvents)-1]
+	if last.Transcript != "new turn transcript" {
+		t.Fatalf("expected last mark event transcript %q, got %q", "new turn transcript", last.Transcript)
+	}
+}
+
+func newSpeechPlayerForTest(segmentationBoundaries string) *speechPlayer {
+	player := newSpeechPlayer()
+	player.InitBuffers(audio.GetDefaultEncodingInfo(), segmentationBoundaries)
+	return player
+}
+
+func addAndDrainText(player *speechPlayer, chunks ...string) []textOrMark {
+	for _, chunk := range chunks {
+		player.AddTextChunk(chunk)
+	}
+	player.TextComplete()
+
+	items := []textOrMark{}
+	for item := range player.TextOrMarks {
+		items = append(items, item)
+	}
+
+	return items
+}
+
+func collectMarkIDs(player *speechPlayer, count int) []string {
+	markIDs := []string{}
+	player.Audio(func(item audioOrMark) bool {
+		if item.Type == "mark" {
+			markIDs = append(markIDs, item.Mark)
+			if len(markIDs) >= count {
+				return false
+			}
 		}
+		return true
 	})
 
-	player.AddAudio([]byte{1, 2})
-	player.AddAudio([]byte{3, 4})
+	return markIDs
+}
 
-	player.audioBuffer.mu.Lock()
-	player.audioBuffer.externalPlayhead = 0
-	player.audioBuffer.internalPlayhead = 2
-	player.audioBuffer.lastMarkTimestamp = time.Now().Add(-2 * time.Second)
-	player.audioBuffer.mu.Unlock()
+type speechPlayerEventRecorder struct {
+	mu         sync.Mutex
+	started    int
+	ended      []string
+	markPlayed []events.AssistantPlaybackMarkPlayed
+}
 
-	emitPlaybackProgress(player)
+func (recorder *speechPlayerEventRecorder) emit(event events.Event) {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
 
-	player.audioBuffer.mu.Lock()
-	player.audioBuffer.paused = true
-	player.audioBuffer.externalPlayhead = 0
-	player.audioBuffer.internalPlayhead = 1
-	player.audioBuffer.mu.Unlock()
-
-	emitPlaybackProgress(player)
-
-	if len(frames) != 1 {
-		t.Fatalf("expected regression to not emit extra playback frame, got %d", len(frames))
+	switch typedEvent := event.(type) {
+	case events.AssistantPlaybackStarted:
+		recorder.started++
+	case events.AssistantPlaybackEnded:
+		recorder.ended = append(recorder.ended, typedEvent.Transcript)
+	case events.AssistantPlaybackMarkPlayed:
+		recorder.markPlayed = append(recorder.markPlayed, typedEvent)
 	}
+}
+
+func (recorder *speechPlayerEventRecorder) startedCount() int {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return recorder.started
+}
+
+func (recorder *speechPlayerEventRecorder) endedTranscripts() []string {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	transcripts := make([]string, len(recorder.ended))
+	copy(transcripts, recorder.ended)
+	return transcripts
+}
+
+func (recorder *speechPlayerEventRecorder) markPlayedEvents() []events.AssistantPlaybackMarkPlayed {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	eventsCopy := make([]events.AssistantPlaybackMarkPlayed, len(recorder.markPlayed))
+	copy(eventsCopy, recorder.markPlayed)
+	return eventsCopy
 }
