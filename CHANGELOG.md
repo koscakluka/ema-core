@@ -14,6 +14,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `core/speechtotext/soniox` real-time STT client with websocket streaming,
   endpoint finalization, and keepalive handling
+- `core/texttospeech/elevenlabs` websocket TTS client implementing
+  `texttospeech.SpeechGeneratorV0`, including alignment-aware mark bridging
+- ElevenLabs TTS client voice discovery/search (`/v2/voices`), default voice
+  fallback behavior, and runtime `SetVoiceID` switching for subsequent streams
 
 ### Changed
 
@@ -21,6 +25,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   detection is enabled
 - spoken-language callback/event APIs are deferred and intentionally left behind
   TODO markers until the public interface is finalized
+- ElevenLabs TTS integration now has explicit TODO markers for unsupported
+  provider features (multi-context sockets, pronunciation dictionaries,
+  advanced auth/query controls, and public alignment surfacing)
+- ElevenLabs TTS default voice selection now resolves dynamically by searching
+  `voice_type=default` and taking the first returned voice instead of using a
+  hard-coded voice id
 
 ### Fixed
 
