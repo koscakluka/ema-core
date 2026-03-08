@@ -9,10 +9,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/koscakluka/ema-core/core/audio"
 )
 
 func (c *TextToSpeechClient) resolveAPIKey() (string, error) {
@@ -98,21 +96,4 @@ func (c *TextToSpeechClient) connectWebsocket(ctx context.Context, encoding enco
 	}
 
 	return conn, nil
-}
-
-func audioSamples(duration time.Duration, encodingInfo audio.EncodingInfo) int {
-	return int(float64(duration) / float64(time.Second) * float64(encodingInfo.SampleRate) * float64(encodingInfo.Format.ByteSize()))
-}
-
-func samplesDuration(samples int, encodingInfo audio.EncodingInfo) time.Duration {
-	if samples <= 0 {
-		return 0
-	}
-
-	bytesPerSecond := encodingInfo.SampleRate * encodingInfo.Format.ByteSize()
-	if bytesPerSecond <= 0 {
-		return 0
-	}
-
-	return time.Duration(float64(samples) / float64(bytesPerSecond) * float64(time.Second))
 }

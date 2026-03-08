@@ -100,7 +100,7 @@ func (p *marker) Play(msg receiveMessage, encoding audio.EncodingInfo) iter.Seq2
 		broken := false
 
 		for audioPlayhead < len(audio) {
-			leftoverAudioDuration := samplesDuration(len(audio[audioPlayhead:]), encoding)
+			leftoverAudioDuration := encoding.DurationForBytes(len(audio[audioPlayhead:]))
 
 			if len(p.marks) <= p.marksPlayhead ||
 				p.marks[p.marksPlayhead].final ||
@@ -114,7 +114,7 @@ func (p *marker) Play(msg receiveMessage, encoding audio.EncodingInfo) iter.Seq2
 			}
 
 			audioToPlayDuration := p.marks[p.marksPlayhead].endMs - p.audioPlayhead
-			markedAudioSamples := audioSamples(audioToPlayDuration, encoding)
+			markedAudioSamples := encoding.BytesForDuration(audioToPlayDuration)
 			if audioPlayhead+markedAudioSamples > len(audio) {
 				// TODO: Check if this ever happens, it shouldn't technically
 				log.Println("audio playhead exceeds audio length, clamping")
