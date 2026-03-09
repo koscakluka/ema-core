@@ -11,8 +11,7 @@ import (
 	"github.com/koscakluka/ema-core/internal/utils"
 )
 
-const minSpokenTextUpdateInterval = 10 * time.Millisecond
-const maxSpokenTextUpdateInterval = 50 * time.Millisecond
+const defaultSpokenTimerDuration = 50 * time.Millisecond
 
 type speechPlayer struct {
 	mu sync.RWMutex
@@ -22,9 +21,9 @@ type speechPlayer struct {
 	text        []string
 	playedMarks int
 
-	confirmedSpokenText         strings.Builder
-	currentMarkProgress         float64
-	lastEmittedPlaybackPlayhead int
+	confirmedSpokenText strings.Builder
+	currentMarkProgress float64
+	bufferedMarkText    *string
 
 	segmentationBoundaries string
 	emitEvent              eventEmitter
@@ -44,7 +43,6 @@ func (p *speechPlayer) InitBuffers(encodingInfo audio.EncodingInfo, segmentation
 		p.text = nil
 		p.playedMarks = 0
 		p.confirmedSpokenText = strings.Builder{}
-		p.lastEmittedPlaybackPlayhead = 0
 		p.segmentationBoundaries = segmentationBoundaries
 	})
 }
@@ -205,8 +203,8 @@ func (p *speechPlayer) runProgressEmitter(done <-chan struct{}) {
 		return
 	}
 
-	nextUpdate := p.emitPlaybackProgress()
-	timer := time.NewTimer(clamp(nextUpdate, minSpokenTextUpdateInterval, maxSpokenTextUpdateInterval))
+	p.emitPlaybackProgress()
+	timer := time.NewTimer(defaultSpokenTimerDuration)
 	defer timer.Stop()
 
 	for {
@@ -214,41 +212,39 @@ func (p *speechPlayer) runProgressEmitter(done <-chan struct{}) {
 		case <-done:
 			return
 		case <-timer.C:
-			nextUpdate = p.emitPlaybackProgress()
-			timer.Reset(clamp(nextUpdate, minSpokenTextUpdateInterval, maxSpokenTextUpdateInterval))
+			p.emitPlaybackProgress()
+			timer.Reset(defaultSpokenTimerDuration)
 		}
 	}
 }
 
-func (p *speechPlayer) emitPlaybackProgress() time.Duration {
+func (p *speechPlayer) emitPlaybackProgress() {
 	if p == nil {
-		return defaultApproximateUpdateDelay
+		return
 	}
 
 	var spokenText string
 	var spokenDelta string
 	// emitSpokenText := false
 	var frame []byte
-	nextUpdate := defaultApproximateUpdateDelay
 	p.lockFor(func() {
 		if p.audioBuffer == nil {
 			return
 		}
+		if p.bufferedMarkText != nil {
+			spokenDelta = *p.bufferedMarkText
+			p.bufferedMarkText = nil
+		}
 
-		progress, delta, approxPlayhead, updateDelay := p.audioBuffer.ApproximateProgressAndPlaybackDelta(p.lastEmittedPlaybackPlayhead)
-		nextUpdate = updateDelay
-		if approxPlayhead > p.lastEmittedPlaybackPlayhead {
-			p.lastEmittedPlaybackPlayhead = approxPlayhead
-		}
-		if len(delta) > 0 {
-			frame = delta
-		}
+		var progress float64
+		progress, frame = p.audioBuffer.Progress(p.playedMarks)
+
 		progress = clamp(progress, 0, 1)
 		if p.currentMarkProgress < progress {
 			if p.playedMarks < len(p.text) && progress > 0 {
 				currentSegmentText := getPercentOf(p.text[p.playedMarks], progress)
 
-				spokenDelta = currentSegmentText[len(getPercentOf(p.text[p.playedMarks], p.currentMarkProgress)):]
+				spokenDelta += currentSegmentText[len(getPercentOf(p.text[p.playedMarks], p.currentMarkProgress)):]
 				spokenText = p.confirmedSpokenText.String() + currentSegmentText
 			}
 			p.currentMarkProgress = progress
@@ -263,8 +259,6 @@ func (p *speechPlayer) emitPlaybackProgress() time.Duration {
 	if len(frame) > 0 {
 		p.emitEvent(events.NewAssistantPlaybackFrame(frame))
 	}
-
-	return nextUpdate
 }
 
 func (p *speechPlayer) Snapshot() *speechPlayer {
@@ -300,6 +294,8 @@ func (p *speechPlayer) SpokenTextSoFar() string {
 
 func (p *speechPlayer) advanceToNextMarkLocked() {
 	if p != nil && p.playedMarks < len(p.text) {
+		// HACK: We should be able to get this text somewhat easier
+		p.bufferedMarkText = utils.Ptr(p.text[p.playedMarks][len(getPercentOf(p.text[p.playedMarks], p.currentMarkProgress)):])
 		p.playedMarks++
 		p.currentMarkProgress = 0
 	}

@@ -1,14 +1,13 @@
 package orchestration
 
 import (
+	"bytes"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/koscakluka/ema-core/core/audio"
 )
-
-const defaultApproximateUpdateDelay = 120 * time.Millisecond
 
 type audioBuffer struct {
 	mu sync.Mutex
@@ -39,6 +38,9 @@ type audioBufferMark struct {
 	terminal    bool
 	broadcasted bool
 	confirmed   bool
+
+	audio          []byte
+	approxPlayhead int
 }
 
 func newAudioBuffer(encodingInfo audio.EncodingInfo) *audioBuffer {
@@ -167,75 +169,6 @@ func (b *audioBuffer) waitForNextAudio(yield func(audioOrMark) bool) (ok bool) {
 	}
 }
 
-func (b *audioBuffer) ApproximateCurrentSegmentProgress() float64 {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.approximateCurrentSegmentProgressLocked(time.Now())
-}
-
-func (b *audioBuffer) ApproximateCurrentSegmentProgressAndNextUpdate() (float64, time.Duration) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.approximateCurrentSegmentProgressAndNextUpdateLocked(time.Now())
-}
-
-func (b *audioBuffer) ApproximateProgressAndPlaybackDelta(lastEmittedPlayhead int) (float64, []byte, int, time.Duration) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	now := time.Now()
-	progress, nextUpdate := b.approximateCurrentSegmentProgressAndNextUpdateLocked(now)
-	delta, approxPlayhead := b.approximatePlaybackDeltaLocked(lastEmittedPlayhead, now)
-
-	return progress, delta, approxPlayhead, nextUpdate
-}
-
-func (b *audioBuffer) ApproximatePlaybackDelta(lastEmittedPlayhead int) ([]byte, int, time.Duration) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	now := time.Now()
-	nextUpdate := b.approximateNextPlayheadStepDelayLocked(now)
-	delta, approxPlayhead := b.approximatePlaybackDeltaLocked(lastEmittedPlayhead, now)
-
-	return delta, approxPlayhead, nextUpdate
-}
-
-func (b *audioBuffer) approximatePlaybackDeltaLocked(lastEmittedPlayhead int, now time.Time) ([]byte, int) {
-	if lastEmittedPlayhead < 0 {
-		lastEmittedPlayhead = 0
-	}
-	if lastEmittedPlayhead > len(b.audio) {
-		lastEmittedPlayhead = len(b.audio)
-	}
-
-	approxPlayhead := b.approximatePlayheadLocked(now)
-	if approxPlayhead < lastEmittedPlayhead {
-		return nil, lastEmittedPlayhead
-	}
-	if approxPlayhead > len(b.audio) {
-		approxPlayhead = len(b.audio)
-	}
-
-	if approxPlayhead == lastEmittedPlayhead {
-		return nil, approxPlayhead
-	}
-
-	deltaLen := audioLen(b.audio[lastEmittedPlayhead:approxPlayhead])
-	if deltaLen == 0 {
-		return nil, approxPlayhead
-	}
-
-	delta := make([]byte, 0, deltaLen)
-	for _, chunk := range b.audio[lastEmittedPlayhead:approxPlayhead] {
-		delta = append(delta, chunk...)
-	}
-
-	return delta, approxPlayhead
-}
-
 // audioDoneLocked is safe to call from a locked context.
 func (b *audioBuffer) audioDoneLocked() bool {
 
@@ -252,10 +185,16 @@ func (b *audioBuffer) Mark(isTerminal ...bool) {
 	terminal := len(isTerminal) > 0 && isTerminal[0]
 
 	b.mu.Lock()
+	markStart := 0
+	if len(b.marks) > 0 {
+		markStart = b.marks[len(b.marks)-1].position
+	}
 	b.marks = append(b.marks, audioBufferMark{
 		ID:       uuid.NewString(),
 		position: len(b.audio),
 		terminal: terminal,
+
+		audio: bytes.Join(b.audio[markStart:], nil),
 	})
 	b.mu.Unlock()
 	b.signalUpdate()
@@ -350,111 +289,28 @@ func (b *audioBuffer) rewindLocked() {
 	// it takes for use to receive the information that the audio was played)
 	// TODO: Consider identifying silences in the audio so we can continue from
 	// there and make the unpausing seem smoother (as a human would do)
-	b.externalPlayhead = b.approximatePlayheadLocked(time.Now())
-	b.internalPlayhead = b.externalPlayhead
+
+	approxPlayhead := min(b.externalPlayhead, b.internalPlayhead)
+
+	if !b.paused && !b.stopped && !b.lastMarkTimestamp.IsZero() {
+		playedBytes := b.encodingInfo.BytesForDuration(time.Since(b.lastMarkTimestamp))
+		for i := approxPlayhead; i < b.internalPlayhead && playedBytes > 0; i++ {
+			chunkBytes := len(b.audio[i])
+			if playedBytes < chunkBytes {
+				break
+			}
+			playedBytes -= chunkBytes
+			approxPlayhead++
+		}
+	}
+
+	b.externalPlayhead = approxPlayhead
+	b.internalPlayhead = approxPlayhead
 	for i, mark := range b.marks {
-		if mark.position > b.internalPlayhead {
+		if mark.position > approxPlayhead {
 			b.marks[i].broadcasted = false
 		}
 	}
-}
-
-// approximatePlayheadLocked estimates the currently played chunk index using
-// external marks as the source of truth and elapsed time since the last
-// confirmation as interpolation.
-func (b *audioBuffer) approximatePlayheadLocked(now time.Time) int {
-	approxPlayhead := b.externalPlayhead
-	if approxPlayhead > b.internalPlayhead {
-		return b.internalPlayhead
-	}
-
-	if b.paused || b.stopped || b.lastMarkTimestamp.IsZero() {
-		return approxPlayhead
-	}
-
-	playedSamples := b.encodingInfo.BytesForDuration(now.Sub(b.lastMarkTimestamp))
-	if playedSamples <= 0 {
-		return approxPlayhead
-	}
-
-	for i := b.externalPlayhead; i < b.internalPlayhead; i++ {
-		playedSamples -= len(b.audio[i])
-		if playedSamples < 0 {
-			break
-		}
-		approxPlayhead++
-	}
-
-	if approxPlayhead > b.internalPlayhead {
-		return b.internalPlayhead
-	}
-
-	return approxPlayhead
-}
-
-func (b *audioBuffer) approximateCurrentSegmentProgressLocked(now time.Time) float64 {
-	progress, _ := b.approximateCurrentSegmentProgressAndNextUpdateLocked(now)
-	return progress
-}
-
-func (b *audioBuffer) approximateCurrentSegmentProgressAndNextUpdateLocked(now time.Time) (float64, time.Duration) {
-	segmentStart := b.externalPlayhead
-	segmentEnd := -1
-	for _, mark := range b.marks {
-		if mark.confirmed {
-			continue
-		}
-		if mark.position <= segmentStart {
-			continue
-		}
-		segmentEnd = mark.position
-		break
-	}
-
-	if segmentEnd <= segmentStart {
-		return 0, b.approximateNextPlayheadStepDelayLocked(now)
-	}
-
-	approxPlayhead := b.approximatePlayheadLocked(now)
-	if approxPlayhead <= segmentStart {
-		return 0, b.approximateNextPlayheadStepDelayLocked(now)
-	}
-	if approxPlayhead >= segmentEnd {
-		return 1, b.approximateNextPlayheadStepDelayLocked(now)
-	}
-
-	return float64(approxPlayhead-segmentStart) / float64(segmentEnd-segmentStart), b.approximateNextPlayheadStepDelayLocked(now)
-}
-
-func (b *audioBuffer) approximateNextPlayheadStepDelayLocked(now time.Time) time.Duration {
-	if b.paused || b.stopped || b.lastMarkTimestamp.IsZero() {
-		return defaultApproximateUpdateDelay
-	}
-
-	if b.externalPlayhead >= b.internalPlayhead || b.externalPlayhead >= len(b.audio) {
-		return defaultApproximateUpdateDelay
-	}
-
-	playedSamples := b.encodingInfo.BytesForDuration(now.Sub(b.lastMarkTimestamp))
-	if playedSamples < 0 {
-		playedSamples = 0
-	}
-
-	for i := b.externalPlayhead; i < b.internalPlayhead && i < len(b.audio); i++ {
-		chunkSize := len(b.audio[i])
-		if playedSamples < chunkSize {
-			remaining := chunkSize - playedSamples
-			delay := b.encodingInfo.DurationForBytes(remaining)
-			if delay <= 0 {
-				return defaultApproximateUpdateDelay
-			}
-			return delay
-		}
-
-		playedSamples -= chunkSize
-	}
-
-	return defaultApproximateUpdateDelay
 }
 
 func (b *audioBuffer) Resume() {
@@ -499,10 +355,47 @@ const (
 	audioOrMarkTypeMark  = "mark"
 )
 
-func audioLen(audio [][]byte) int {
-	chunksTotalLength := 0
-	for _, audioChunk := range audio {
-		chunksTotalLength += len(audioChunk)
+func (b *audioBuffer) Progress(markIdx int) (float64, []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.lastMarkTimestamp.IsZero() {
+		return 0, nil
 	}
-	return chunksTotalLength
+
+	if b.paused || b.stopped {
+		// TODO: We should probably return the progress here as well as any
+		// audio we haven't played yet.
+		return 0, nil
+	}
+
+	audioFrame := []byte{}
+	for i, mark := range b.marks {
+		if mark.approxPlayhead == len(mark.audio) {
+			if markIdx == i {
+				return 1, audioFrame
+			}
+			continue
+		}
+
+		if markIdx == i {
+			playedSamplesSinceMark := b.encodingInfo.BytesForDuration(time.Since(b.lastMarkTimestamp))
+			if playedSamplesSinceMark <= 0 ||
+				playedSamplesSinceMark < mark.approxPlayhead {
+				return 0, audioFrame
+			}
+
+			playedSamplesSinceMark = min(playedSamplesSinceMark, len(mark.audio))
+
+			audioFrame = append(audioFrame, mark.audio[mark.approxPlayhead:playedSamplesSinceMark]...)
+			mark.approxPlayhead = playedSamplesSinceMark
+
+			return float64(playedSamplesSinceMark) / float64(len(mark.audio)), audioFrame
+		}
+
+		audioFrame = append(audioFrame, mark.audio[mark.approxPlayhead:]...)
+		b.marks[i].approxPlayhead = len(mark.audio)
+	}
+
+	return 0, audioFrame
 }
