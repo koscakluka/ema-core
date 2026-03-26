@@ -34,6 +34,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- assistant spoken-text delta callbacks now emit mark-confirmed buffered text
+  even when no additional in-flight progress is available, preventing dropped
+  transcript characters at mark boundaries
+- spoken-text progress slicing now respects UTF-8 rune boundaries to avoid
+  partial multibyte characters in playback transcript updates
 - Soniox STT websocket shutdown now uses a graceful close sequence and ignores
   expected local socket-close read errors to avoid noisy logs
 - Soniox STT now streams short synthetic silence after input pauses so endpoint

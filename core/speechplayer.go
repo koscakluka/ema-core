@@ -233,6 +233,9 @@ func (p *speechPlayer) emitPlaybackProgress() {
 		}
 		if p.bufferedMarkText != nil {
 			spokenDelta = *p.bufferedMarkText
+			if spokenDelta != "" {
+				spokenText = p.confirmedSpokenText.String()
+			}
 			p.bufferedMarkText = nil
 		}
 
@@ -253,6 +256,8 @@ func (p *speechPlayer) emitPlaybackProgress() {
 
 	if spokenText != "" {
 		p.emitEvent(events.NewAssistantPlaybackTranscriptUpdated(spokenText))
+	}
+	if spokenDelta != "" {
 		p.emitEvent(events.NewAssistantPlaybackTranscriptSegment(spokenDelta))
 	}
 
@@ -354,8 +359,9 @@ func getPercentOf(text string, percent float64) string {
 	// TODO: Check if it makes more sense to return an error in this case or
 	// even just return empty string (<=0) and full text (>=1).
 	percent = clamp(percent, 0, 1)
-	approxLen := int(float64(len(text)) * percent)
-	return text[:min(approxLen, len(text))]
+	textRunes := []rune(text)
+	approxLen := int(float64(len(textRunes)) * percent)
+	return string(textRunes[:min(approxLen, len(textRunes))])
 }
 
 func clamp[T cmp.Ordered](x T, minValue T, maxValue T) T {

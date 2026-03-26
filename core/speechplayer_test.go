@@ -3,6 +3,7 @@ package orchestration
 import (
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/koscakluka/ema-core/core/audio"
 	events "github.com/koscakluka/ema-core/core/events"
@@ -166,6 +167,56 @@ func TestSpeechPlayerSpokenTextSoFarFollowsConfirmedMarkOrder(t *testing.T) {
 	}
 }
 
+func TestSpeechPlayerConfirmOutputMarkEmitsBufferedDeltaWithoutFurtherProgress(t *testing.T) {
+	player := newSpeechPlayerForTest("")
+	recorder := &speechPlayerEventRecorder{}
+	player.SetEventEmitter(recorder.emit)
+
+	addAndDrainText(player, "Hello")
+	player.AddAudio(make([]byte, 320000))
+	player.AddMark()
+
+	markIDs := collectMarkIDs(player, 1)
+	if len(markIDs) != 1 {
+		t.Fatalf("expected one emitted mark id, got %d", len(markIDs))
+	}
+
+	transcript := player.ConfirmOutputMark(markIDs[0])
+	if transcript == nil || *transcript != "Hello" {
+		t.Fatalf("expected confirmed transcript %q, got %v", "Hello", transcript)
+	}
+
+	segments := recorder.transcriptSegmentEvents()
+	if len(segments) == 0 {
+		t.Fatalf("expected spoken delta event to be emitted")
+	}
+	if got := segments[len(segments)-1]; got != "Hello" {
+		t.Fatalf("expected last spoken delta %q, got %q", "Hello", got)
+	}
+
+	updates := recorder.transcriptUpdateEvents()
+	if len(updates) == 0 {
+		t.Fatalf("expected spoken text update event to be emitted")
+	}
+	if got := updates[len(updates)-1]; got != "Hello" {
+		t.Fatalf("expected last spoken text update %q, got %q", "Hello", got)
+	}
+}
+
+func TestGetPercentOfKeepsUTF8Boundaries(t *testing.T) {
+	text := "A🙂Б"
+	for i := 0; i <= 100; i++ {
+		partial := getPercentOf(text, float64(i)/100)
+		if !utf8.ValidString(partial) {
+			t.Fatalf("expected valid UTF-8 for percent %d, got %q", i, partial)
+		}
+	}
+
+	if got := getPercentOf(text, 0.67); got != "A🙂" {
+		t.Fatalf("expected rune-safe partial %q, got %q", "A🙂", got)
+	}
+}
+
 func TestSpeechPlayerAudioEmitsPlaybackStartedWhenAudioIsConsumed(t *testing.T) {
 	player := newSpeechPlayerForTest("")
 	recorder := &speechPlayerEventRecorder{}
@@ -311,10 +362,12 @@ func collectMarkIDs(player *speechPlayer, count int) []string {
 }
 
 type speechPlayerEventRecorder struct {
-	mu         sync.Mutex
-	started    int
-	ended      []string
-	markPlayed []events.AssistantPlaybackMarkPlayed
+	mu                 sync.Mutex
+	started            int
+	ended              []string
+	markPlayed         []events.AssistantPlaybackMarkPlayed
+	transcriptUpdates  []string
+	transcriptSegments []string
 }
 
 func (recorder *speechPlayerEventRecorder) emit(event events.Event) {
@@ -328,6 +381,10 @@ func (recorder *speechPlayerEventRecorder) emit(event events.Event) {
 		recorder.ended = append(recorder.ended, typedEvent.Transcript)
 	case events.AssistantPlaybackMarkPlayed:
 		recorder.markPlayed = append(recorder.markPlayed, typedEvent)
+	case events.AssistantPlaybackTranscriptUpdated:
+		recorder.transcriptUpdates = append(recorder.transcriptUpdates, typedEvent.Transcript)
+	case events.AssistantPlaybackTranscriptSegment:
+		recorder.transcriptSegments = append(recorder.transcriptSegments, typedEvent.Segment)
 	}
 }
 
@@ -351,4 +408,20 @@ func (recorder *speechPlayerEventRecorder) markPlayedEvents() []events.Assistant
 	eventsCopy := make([]events.AssistantPlaybackMarkPlayed, len(recorder.markPlayed))
 	copy(eventsCopy, recorder.markPlayed)
 	return eventsCopy
+}
+
+func (recorder *speechPlayerEventRecorder) transcriptUpdateEvents() []string {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	updates := make([]string, len(recorder.transcriptUpdates))
+	copy(updates, recorder.transcriptUpdates)
+	return updates
+}
+
+func (recorder *speechPlayerEventRecorder) transcriptSegmentEvents() []string {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	segments := make([]string, len(recorder.transcriptSegments))
+	copy(segments, recorder.transcriptSegments)
+	return segments
 }
