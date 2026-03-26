@@ -10,39 +10,31 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [v0.0.20] - 2026-03-26
+
 ### Added
 
 - `core/speechtotext/soniox` real-time STT client with websocket streaming,
-  endpoint finalization, and keepalive handling
+  endpoint finalization, and keepalive handling. It defaults
+  `max_endpoint_delay_ms` to `1000` when endpoint detection is enabled, uses
+  graceful websocket shutdown, and streams short synthetic silence after pauses
+  so utterances finalize more reliably
 - `core/texttospeech/elevenlabs` websocket TTS client implementing
   `texttospeech.SpeechGeneratorV0`, including alignment-aware mark bridging
 - ElevenLabs TTS client voice discovery/search (`/v2/voices`), default voice
   fallback behavior, and runtime `SetVoiceID` switching for subsequent streams
-
-### Changed
-
-- Soniox STT now defaults `max_endpoint_delay_ms` to `1000` when endpoint
-  detection is enabled
-- spoken-language callback/event APIs are deferred and intentionally left behind
-  TODO markers until the public interface is finalized
-- ElevenLabs TTS integration now has explicit TODO markers for unsupported
-  provider features (multi-context sockets, pronunciation dictionaries,
-  advanced auth/query controls, and public alignment surfacing)
 - ElevenLabs TTS default voice selection now resolves dynamically by searching
   `voice_type=default` and taking the first returned voice instead of using a
   hard-coded voice id
 
 ### Fixed
 
-- assistant spoken-text delta callbacks now emit mark-confirmed buffered text
-  even when no additional in-flight progress is available, preventing dropped
-  transcript characters at mark boundaries
-- spoken-text progress slicing now respects UTF-8 rune boundaries to avoid
+- playback transcript progression now follows confirmed speech marks and aligned
+  segment audio, preventing dropped or duplicated characters around boundaries
+- spoken-text progress slicing now respects UTF-8 rune boundaries, avoiding
   partial multibyte characters in playback transcript updates
-- Soniox STT websocket shutdown now uses a graceful close sequence and ignores
-  expected local socket-close read errors to avoid noisy logs
-- Soniox STT now streams short synthetic silence after input pauses so endpoint
-  detection can finalize utterances before falling back to keepalive-only mode
+- audio timing and byte-to-duration handling are now consistent across
+  playback, speech synthesis, and speech transcription paths
 
 ## [v0.0.19] - 2026-02-24
 
@@ -543,7 +535,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - playback mark-awaiting support for miniaudio output synchronization
 
-[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.19...HEAD
+[unreleased]: https://github.com/koscakluka/ema-core/compare/v0.0.20...HEAD
+[v0.0.20]: https://github.com/koscakluka/ema-core/compare/v0.0.19...v0.0.20
 [v0.0.19]: https://github.com/koscakluka/ema-core/compare/v0.0.18...v0.0.19
 [v0.0.18]: https://github.com/koscakluka/ema-core/compare/v0.0.17...v0.0.18
 [v0.0.17]: https://github.com/koscakluka/ema-core/compare/v0.0.16...v0.0.17
